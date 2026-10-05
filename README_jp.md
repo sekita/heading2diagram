@@ -231,4 +231,3 @@ heading2diagram/
 
 引用情報は [`CITATION.cff`](CITATION.cff) に記載している。
 
-Zenodo DOI 発行後は、README と次回リリース用 `CITATION.cff` に DOI を追加する。
