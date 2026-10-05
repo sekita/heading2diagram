@@ -8,7 +8,7 @@
 
 ## バージョン
 
-`1.0.0`
+`1.0.1`
 
 ## 動作環境
 
@@ -213,7 +213,7 @@ heading2diagram/
 ├── VERSION
 ├── docs/
 │   ├── 見出し形式文法.md
-│   └── RELEASE_CHECKLIST.md
+│   └── headingBasedFormatSyntax.md
 ├── examples/
 │   ├── README.md
 │   ├── README_jp.md
