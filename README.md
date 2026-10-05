@@ -3,7 +3,7 @@
 **heading2diagram** is a command-line tool that converts a Markdown-like heading format into Mermaid or PlantUML diagram source.
 
 - Japanese: [README_jp.md](README_jp.md)
-- Heading-format grammar (Japanese): [docs/見出し形式文法.md](docs/見出し形式文法.md)
+- Heading-format grammar : [docs/headingBasedFormatSyntax.md](docs/headingBasedFormatSyntax.md)
 - Examples: [examples/README.md](examples/README.md)
 
 ## Version
@@ -131,4 +131,3 @@ This repository is prepared for release under the [MIT License](LICENSE).
 
 Citation metadata are provided in [`CITATION.cff`](CITATION.cff). 
 
-After Zenodo issues a DOI, add the DOI to the README files and to `CITATION.cff` for the next release.
