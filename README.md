@@ -97,7 +97,7 @@ Example:
 |先方待ち|実線矢印;サブ;備品確認
 ```
 
-See [docs/見出し形式文法.md](docs/見出し形式文法.md) for line types, shapes, colors, diagram-specific input conditions, and error-handling rules.
+See [docs/headingBasedFormatSyntax.md](docs/headingBasedFormatSyntax.md) for line types, shapes, colors, diagram-specific input conditions, and error-handling rules.
 
 ## Global options
 
