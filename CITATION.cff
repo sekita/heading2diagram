@@ -4,6 +4,7 @@ title: "heading2diagram"
 type: software
 version: "1.0.2"
 date-released: "2026-10-06"
+doi: 10.5281/zenodo.23189437
 license: MIT
 authors:
   - family-names: "Sekita"
