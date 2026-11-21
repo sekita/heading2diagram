@@ -5,32 +5,46 @@ import unittest
 from pathlib import Path
 
 
+def buildCases(suffix, outPrefix):
+    """日本語（suffix=''）・英語（suffix='_en'）で共通のテストケースを作る。"""
+    def inputName(number):
+        return f"example{number}{suffix}.md"
+
+    def outputName(number, name):
+        return f"out{number}{outPrefix}_{name}.md"
+
+    return [
+        (inputName(1), outputName(1, "hier-block"), ["-t", "hier-block"]),
+        (inputName(1), outputName(1, "hier-flow"), ["-t", "hier-flow"]),
+        (inputName(1), outputName(1, "hier-mind"), ["-t", "hier-mind"]),
+        (inputName(1), outputName(1, "struct-flow_tight"), ["-t", "struct-flow", "--layout", "tight"]),
+        (inputName(2), outputName(2, "hier-block_LR_tight"), ["-t", "hier-block", "--direction", "LR", "--layout", "tight"]),
+        (inputName(2), outputName(2, "hier-flow_LR"), ["-t", "hier-flow", "--direction", "LR"]),
+        (inputName(2), outputName(2, "hier-mindlabel_LR"), ["-t", "hier-mindlabel", "--direction", "LR"]),
+        (inputName(2), outputName(2, "struct-flow_tight"), ["-t", "struct-flow", "--layout", "tight"]),
+        (inputName(3), outputName(3, "fishBone"), ["-t", "fishBone"]),
+        (inputName(3), outputName(3, "hier-flow_RL_thickArrow_arrowReverse"), ["-t", "hier-flow", "--direction", "RL", "--line", "thickArrow", "--arrowDirection", "reverse"]),
+        (inputName(4), outputName(4, "venn"), ["-t", "venn"]),
+        (inputName(5), outputName(5, "table1c"), ["-t", "table1c"]),
+        (inputName(6), outputName(6, "quadrant"), ["-t", "quadrant"]),
+        (inputName(7), outputName(7, "pie"), ["-t", "pie"]),
+        (inputName(8), outputName(8, "star"), ["-t", "star"]),
+        (inputName(8), outputName(8, "star_degree30_dotted"), ["-t", "star", "--degree", "30", "--line", "dotted"]),
+    ]
+
+
 class ExampleOutputTests(unittest.TestCase):
     rootDir = Path(__file__).resolve().parents[1]
     programPath = rootDir / "heading2diagram.py"
     examplesDir = rootDir / "examples"
 
-    cases = [
-        ("example1.md", "out1_hier-block.md", ["-t", "hier-block"]),
-        ("example1.md", "out1_hier-flow.md", ["-t", "hier-flow"]),
-        ("example1.md", "out1_hier-mind.md", ["-t", "hier-mind"]),
-        ("example1.md", "out1_struct-flow_tight.md", ["-t", "struct-flow", "--layout", "tight"]),
-        ("example2.md", "out2_hier-block_LR_tight.md", ["-t", "hier-block", "--direction", "LR", "--layout", "tight"]),
-        ("example2.md", "out2_hier-flow_LR.md", ["-t", "hier-flow", "--direction", "LR"]),
-        ("example2.md", "out2_hier-mindlabel_LR.md", ["-t", "hier-mindlabel", "--direction", "LR"]),
-        ("example2.md", "out2_struct-flow_tight.md", ["-t", "struct-flow", "--layout", "tight"]),
-        ("example3.md", "out3_fishBone.md", ["-t", "fishBone"]),
-        ("example3.md", "out3_hier-flow_RL_thickArrow_arrowReverse.md", ["-t", "hier-flow", "--direction", "RL", "--line", "thickArrow", "--arrowDirection", "reverse"]),
-        ("example4.md", "out4_venn.md", ["-t", "venn"]),
-        ("example5.md", "out5_table1c.md", ["-t", "table1c"]),
-        ("example6.md", "out6_quadrant.md", ["-t", "quadrant"]),
-        ("example7.md", "out7_pie.md", ["-t", "pie"]),
-    ]
+    japaneseCases = buildCases("", "")
+    englishCases = buildCases("_en", "_en")
 
-    def testReferenceOutputs(self):
+    def checkCases(self, cases):
         with tempfile.TemporaryDirectory() as tempDir:
             tempPath = Path(tempDir)
-            for inputName, outputName, optionArgs in self.cases:
+            for inputName, outputName, optionArgs in cases:
                 with self.subTest(output=outputName):
                     generatedPath = tempPath / outputName
                     command = [
@@ -46,6 +60,12 @@ class ExampleOutputTests(unittest.TestCase):
                     expectedText = (self.examplesDir / outputName).read_text(encoding="utf-8")
                     actualText = generatedPath.read_text(encoding="utf-8")
                     self.assertEqual(actualText, expectedText)
+
+    def testJapaneseReferenceOutputs(self):
+        self.checkCases(self.japaneseCases)
+
+    def testEnglishReferenceOutputs(self):
+        self.checkCases(self.englishCases)
 
 
 if __name__ == "__main__":

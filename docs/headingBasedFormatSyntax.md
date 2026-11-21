@@ -20,10 +20,11 @@ The types of diagrams that can be generated from the heading format are shown in
 | Represent sets and their intersections as a Venn diagram | venn | Describe sets at the first level, intersections of two sets at the second level, and intersections of three sets at the third level. The corresponding sets are determined by their order of appearance. |
 | Represent information consisting of rows and columns. Make the header row and column N bold. `c` centers the elements. | table, tableN, tablec, tableNc | Each first-level element becomes the first column of a row, and the following second-level elements become the second and subsequent columns. Specify `1`, `2`, or `3` for N. |
 | Represent four quadrants based on two perspectives | quadrant | Specify two first-level elements representing the left and right sides of the horizontal axis. Under each, specify two second-level elements representing the lower and upper parts of the vertical axis. Each quadrant may contain up to nine third-level elements: the first is the quadrant heading, and up to eight subsequent elements are items within the quadrant. |
+| Represent a central element and its surrounding elements as a radial (star) diagram | star | Use a single first-level element as the center, and describe the surrounding elements at the second level. The second-level elements are placed clockwise around the center in the order in which they are written. Third and lower levels must not be used. See Table 2 for attribute specifications. |
 
 ## 2. Attribute Specifications for Individual Elements
 
-In `hier-mind`, `hier-flow`, `hier-block`, and `struct-flow`, attributes can be added to individual elements to specify the frame shape, labels on connecting lines, connecting-line type, and fill color (**Table 2**). These element-level specifications take precedence over the diagram-wide specifications in Table 3. In the following sections, the first three diagram types are collectively referred to as `hier-*`. This is only a collective term used for explanation and does not mean that `hier-*` can be specified as a diagram type ID.
+In `hier-mind`, `hier-flow`, `hier-block`, `struct-flow`, and `star`, attributes can be added to individual elements to specify the frame shape, labels on connecting lines, connecting-line type, and fill color (**Table 2**). These element-level specifications take precedence over the diagram-wide specifications in Table 3. In the following sections, the first three diagram types are collectively referred to as `hier-*`. This is only a collective term used for explanation and does not mean that `hier-*` can be specified as a diagram type ID.
 
 Excluding the leading `#` characters used to indicate the hierarchy level, the basic format is as follows:
 
@@ -91,7 +92,7 @@ Examples:
 
 If a label is specified on a connecting line in `hier-mind`, `hier-mindlabel` is automatically used.
 
-**Table 2. Attribute Values for hier-mind, hier-flow, hier-block, and struct-flow**
+**Table 2. Attribute Values for hier-mind, hier-flow, hier-block, struct-flow, and star**
 
 | **Attribute** | **Position / Format** | **Description** |
 |---|---|---|
@@ -102,7 +103,7 @@ If a label is specified on a connecting line in `hier-mind`, `hier-mindlabel` is
 
 ## 3. Command-Line Options for the Entire Diagram
 
-For `hier-*` and `struct-flow`, options can be added to the execution command shown in Section 4.1 to change the overall diagram direction, connecting lines, spacing, and other settings. The available options can also be checked using the following command:
+For `hier-*`, `struct-flow`, and `star`, options can be added to the execution command shown in Section 4.1 to change the overall diagram direction, connecting lines, spacing, and other settings. The available options can also be checked using the following command:
 
 ```sh
 python heading2diagram.py -h
@@ -116,10 +117,14 @@ The values available for each option are shown in **Table 3**. For each option, 
 | **Option** | **Applicable Diagram Types** | **Values** | **Meaning** |
 |---|---|---|---|
 | `--direction` | hier-* | TB (TD), LR, RL, BT | Specifies the direction in which the hierarchy expands. |
-| `--line` | hier-*, struct-flow | solid, dotted, thick, solidArrow, dottedArrow, thickArrow | Specifies the default connecting-line type used throughout the diagram. |
-| `--layout` | hier-*, struct-flow | normal, tight, spacyX, spacyY, spacyXY, spacyPadding | Specifies spacing and margins between elements. `spacyPadding` increases the padding between the frame and the element name. |
-| `--arrowDirection` | hier-flow, hier-block, struct-flow | default, reverse | Specifies the direction of arrows when arrows are used. `reverse` reverses the default direction. |
+| `--line` | hier-*, struct-flow, star | solid, dotted, thick, solidArrow, dottedArrow, thickArrow | Specifies the default connecting-line type used throughout the diagram. |
+| `--layout` | hier-*, struct-flow, star | normal, tight, spacyX, spacyY, spacyXY, spacyPadding | Specifies spacing and margins between elements. `spacyPadding` increases the padding between the frame and the element name. |
+| `--arrowDirection` | hier-flow, hier-block, star | default, reverse | Specifies the direction of arrows when arrows are used. `reverse` reverses the default direction. |
 | `--curve` | hier-flow | default, linear, bumpX, bumpY, step, cardinal, catmullRom, monotoneX, monotoneY, natural | Specifies the type of curve used for connecting lines. See the Mermaid documentation for details. |
+| `--degree` | star | 0, or any number | Specifies the angle, in degrees, of the first surrounding element. 0 is directly above the center, and angles increase clockwise. The other elements are placed at equal angular intervals. |
+| `--span` | star | 4, or an integer of 1 or more | Specifies the number of grid columns occupied by each block. Larger values allow finer horizontal placement. |
+| `--radius` | star | (automatic), or a positive number | Specifies the distance from the center to the surrounding elements, in estimated pixels. If omitted, the distance is chosen automatically so that blocks and line labels do not overlap. If the specified distance causes an overlap, an error is reported. |
+| `--blockWidth` | star | (automatic), or a positive number | Specifies the block width used for the layout calculation, in estimated pixels. If omitted, the estimated width of the widest block is used. |
 
 ## 4. Design Policy for Input Errors
 

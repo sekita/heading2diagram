@@ -3,27 +3,32 @@
 """heading2diagram: 見出し形式Markdownからダイアグラム定義を生成するCLIプログラム.
 
 Markdownの見出し（# 〜）だけで記述された階層データを読み込み、
-PlantUML（mindmap / salt）および Mermaid（flowchart / block / ishikawa /
-pie / venn / quadrantChart）のダイアグラム定義（テキスト）を生成する。
-標準ライブラリのみを使用する（Python 3.10以上）。
+PlantUML（mindmap / salt）および Mermaid（flowchart / block / ishikawa / pie / venn / quadrantChart）
+のダイアグラム定義をMarkdown文書として出力する。標準ライブラリのみを使用する。
 """
 
 import argparse
+import math
 import re
 import sys
 import unicodedata
 
+sys.setrecursionlimit(10000)
+
 # ---------------------------------------------------------------------------
-# 定数（図種・オプション・記法の対応表）
+# 定数
 # ---------------------------------------------------------------------------
 
 typeIdList = [
-    'hier-mind', 'hier-mindlabel', 'hier-block', 'hier-flow', 'fishBone',
-    'pie', 'venn', 'table', 'tablec', 'table1', 'table1c', 'table2',
-    'table2c', 'table3', 'table3c', 'struct-flow', 'quadrant',
+    'hier-mind', 'hier-mindlabel', 'hier-block', 'hier-flow', 'fishBone', 'pie', 'venn',
+    'table', 'tablec', 'table1', 'table1c', 'table2', 'table2c', 'table3', 'table3c',
+    'struct-flow', 'quadrant', 'star',
 ]
-tableTypeIds = ['table', 'tablec', 'table1', 'table1c', 'table2', 'table2c',
-                'table3', 'table3c']
+tableTypeIds = ['table', 'tablec', 'table1', 'table1c', 'table2', 'table2c', 'table3', 'table3c']
+defaultTypeIds = [
+    'hier-mind', 'hier-block', 'hier-flow', 'fishBone', 'pie', 'venn', 'table',
+    'struct-flow', 'quadrant', 'star',
+]
 plantumlTypeIds = {'hier-mind', 'hier-mindlabel'} | set(tableTypeIds)
 
 directionChoices = ['TB', 'TD', 'BT', 'LR', 'RL']
@@ -31,22 +36,19 @@ layoutChoices = ['tight', 'normal', 'spacyX', 'spacyY', 'spacyXY', 'spacyPadding
 lineChoices = ['dotted', 'solid', 'thick', 'dottedArrow', 'solidArrow', 'thickArrow']
 arrowDirectionChoices = ['default', 'reverse']
 curveChoices = ['default', 'linear', 'bumpX', 'bumpY', 'cardinal', 'catmullRom',
-                'monotoneX', 'monotoneY', 'natural', 'step']
+          'monotoneX', 'monotoneY', 'natural', 'step']
 
-# 見出し行に含めるオプション（図種ごと・この順）
-optionOrder = ['direction', 'layout', 'line', 'arrowDirection', 'curve']
-optionFlags = {
-    'direction': '--direction', 'layout': '--layout', 'line': '--line',
-    'arrowDirection': '--arrowDirection', 'curve': '--curve',
-}
-meaningfulOptions = {
+# 見出しに含めるオプション（3.2）
+headingOptions = {
     'hier-mind': ['direction', 'layout', 'line'],
     'hier-mindlabel': ['direction', 'layout', 'line'],
     'hier-block': ['direction', 'layout', 'line', 'arrowDirection'],
     'hier-flow': ['direction', 'layout', 'line', 'arrowDirection', 'curve'],
     'struct-flow': ['layout', 'line'],
+    'star': ['layout', 'line', 'arrowDirection', 'degree', 'span', 'radius', 'blockWidth'],
 }
 
+# 線種名（5.3）
 lineStyleNames = {
     '実線': 'solid', 'solid': 'solid',
     '点線': 'dotted', 'dotted': 'dotted',
@@ -56,6 +58,7 @@ lineStyleNames = {
     '太線矢印': 'thickArrow', 'thickArrow': 'thickArrow',
 }
 
+# 形状名（4.3）
 shapeNames = {
     '四角': 'rect', 'rect': 'rect',
     '角丸': 'rounded', 'rounded': 'rounded',
@@ -74,7 +77,7 @@ shapeNames = {
     '無枠': 'borderless', 'borderless': 'borderless',
 }
 
-# Mermaid の形状記法（開き括弧, 閉じ括弧）
+# Mermaidの形状書式（開き記号, 閉じ記号）
 shapeBrackets = {
     'rect': ('[', ']'),
     'rounded': ('(', ')'),
@@ -93,6 +96,7 @@ shapeBrackets = {
     'borderless': ('[', ']'),
 }
 
+# 線の記法（5.3, 5.4）
 flowSymbols = {
     'solid': '---', 'dotted': '-.-', 'thick': '===',
     'solidArrow': '-->', 'dottedArrow': '-.->', 'thickArrow': '==>',
@@ -106,464 +110,402 @@ blockReverseSymbols = {
 }
 reverseDirection = {'TB': 'BT', 'TD': 'BT', 'BT': 'TB', 'LR': 'RL', 'RL': 'LR'}
 
-headingRe = re.compile(r'(#+)(?:[ \t]+(.*))?')
-headingTypoRe = re.compile(r'#+[^ \t#]')
-colorRe = re.compile(r'(.*):(#(?:[0-9A-Fa-f]{6}|[0-9A-Fa-f]{3}))', re.S)
-badColorRe = re.compile(r':#\S*$')
+# star の定数（10.9.1）
+wideCharWidth = 16
+narrowCharWidth = 9
+blockPaddingX = 30
+blockHeight = 40
+labelPaddingX = 8
+labelHeight = 24
+angleWeight = 2.0
+sizePenalty = 0.5
+searchRange = 1.5
+
+# star の --layout による値（10.9.2）: (minLineLength, labelMargin, minBlockGap, cellGap)
+starLayoutValues = {
+    'tight': (15, 8, 8, 8),
+    'normal': (30, 16, 16, 8),
+    'spacyX': (60, 32, 32, 8),
+    'spacyY': (60, 32, 32, 8),
+    'spacyXY': (60, 32, 32, 8),
+    'spacyPadding': (30, 16, 16, 30),
+}
+
+blockPaddingFrontmatter = ['---', 'config:', '  block:', '    padding: 30', '---']
+
+fullWidthSpace = '　'
+
+headingRe = re.compile(r'^(#+)(?:[ \t]+(.*))?$')
+headingTypoRe = re.compile(r'^#+[^ \t#]')
+colorRe = re.compile(r':#([0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})$')
+colorTypoRe = re.compile(r':#\S*$')
 modifierRe = re.compile(r'([^ \t;]*);')
 numberRe = re.compile(r'[0-9]+(\.[0-9]+)?')
 
-fullWidthSpace = '\u3000'
-
 
 # ---------------------------------------------------------------------------
-# 入出力・診断
+# 警告・エラー
 # ---------------------------------------------------------------------------
 
-def writeStream(stream, text):
-    """UTF-8 で文字列をストリームへ書き出す."""
-    bufferObj = getattr(stream, 'buffer', None)
-    if bufferObj is not None:
-        stream.flush()
-        bufferObj.write(text.encode('utf-8'))
-        bufferObj.flush()
-    else:
-        stream.write(text)
-        stream.flush()
-
-
-class Diagnostics:
-    """警告・エラーを stderr へ出力する（同一の警告は1回のみ）."""
+class Reporter:
+    """警告をstderrへ出力する。同一の警告は1回のみ出力する。"""
 
     def __init__(self):
-        self.seenWarnings = set()
+        self.seenMessages = set()
 
     def warn(self, message):
-        if message in self.seenWarnings:
+        if message in self.seenMessages:
             return
-        self.seenWarnings.add(message)
-        writeStream(sys.stderr, 'warning: ' + message + '\n')
+        self.seenMessages.add(message)
+        sys.stderr.write('warning: ' + message + '\n')
+        sys.stderr.flush()
 
-    def error(self, message):
-        writeStream(sys.stderr, 'error: ' + message + '\n')
+    @staticmethod
+    def error(message):
+        sys.stderr.write('error: ' + message + '\n')
+        sys.stderr.flush()
+
+
+reporter = Reporter()
+
+
+class ConditionError(Exception):
+    """図種の入力条件違反（4.4）。"""
 
 
 class InputError(Exception):
-    """入力エラー（終了コード1）."""
+    """入力エラー（終了コード1）。"""
 
 
 # ---------------------------------------------------------------------------
-# 入力の解析
+# 入力の解析（4.1）
 # ---------------------------------------------------------------------------
 
-class HeadingEntry:
-    """見出し行1行分の解析結果."""
+class ContentInfo:
+    """見出し行の内容の解析結果。"""
 
-    def __init__(self, lineNo, rawLevel, label, lineStyle, shape, text, color):
+    def __init__(self):
+        self.label = None
+        self.lineType = None
+        self.shape = None
+        self.text = ''
+        self.color = None
+
+
+class HeadingRecord:
+    """見出し行1行分の情報。"""
+
+    def __init__(self, lineNo, level, info):
         self.lineNo = lineNo
-        self.rawLevel = rawLevel
-        self.label = label
-        self.lineStyle = lineStyle
-        self.shape = shape
-        self.text = text
-        self.color = color
+        self.level = level
+        self.info = info
 
     @property
     def isEmpty(self):
-        return self.text == ''
+        return self.info.text == ''
 
 
-class Node:
-    """木構造の節."""
-
-    def __init__(self, entry, level):
-        self.entry = entry
-        self.level = level
-        self.children = []
-        self.parent = None
-        self.nodeId = ''
-
-    label = property(lambda self: self.entry.label)
-    lineStyle = property(lambda self: self.entry.lineStyle)
-    shape = property(lambda self: self.entry.shape)
-    text = property(lambda self: self.entry.text)
-    color = property(lambda self: self.entry.color)
-    lineNo = property(lambda self: self.entry.lineNo)
+def stripBlank(text):
+    """半角スペースとタブのみを前後から取り除く。"""
+    return text.strip(' \t')
 
 
-def parseContent(content, lineNo, diag):
-    """見出し行の内容をラベル・修飾・テキスト・色に分解する（4.1）."""
-    rest = content.rstrip(' \t')
-    label = None
+def parseContent(content, lineNo):
+    """見出し行の内容を ラベル・色・修飾・テキスト に分解する。"""
+    info = ContentInfo()
+    rest = stripBlank(content)
 
     # 1. ラベル
     if rest.startswith('|'):
         closeIndex = rest.find('|', 1)
         if closeIndex < 0:
-            diag.warn(f'{lineNo}行目: ラベルの閉じ "|" が無いため、"|" を含めて内容全体をテキストとして扱う')
+            reporter.warn(f'line {lineNo}: ラベルの閉じ "|" が無い。先頭の "|" を含めて内容全体をテキストとして扱う')
+            info.text = rest
+            return info
+        labelText = stripBlank(rest[1:closeIndex])
+        rest = stripBlank(rest[closeIndex + 1:])
+        if labelText == '':
+            reporter.warn(f'line {lineNo}: ラベルが空である。ラベル無しとして扱う')
         else:
-            labelText = rest[1:closeIndex].strip(' \t')
-            if labelText == '':
-                diag.warn(f'{lineNo}行目: ラベルが空（||）のため、ラベル無しとして扱う')
-            else:
-                label = labelText
-            rest = rest[closeIndex + 1:].lstrip(' \t')
+            info.label = labelText
 
     # 2. 色
-    color = None
-    colorMatch = colorRe.fullmatch(rest)
+    colorMatch = colorRe.search(rest)
     if colorMatch:
-        rest = colorMatch.group(1)
-        color = colorMatch.group(2)
-    elif badColorRe.search(rest):
-        diag.warn(f'{lineNo}行目: 色の指定 ":#..." が16進3桁または6桁ではない（書き間違いの可能性）。テキストの一部として扱う')
+        info.color = '#' + colorMatch.group(1)
+        rest = rest[:colorMatch.start()]
+    elif colorTypoRe.search(rest):
+        reporter.warn(f'line {lineNo}: ":#" の後が16進3桁・6桁でない（色の書き間違いの可能性）。テキストの一部として扱う')
 
     # 3. 修飾（線種名・形状名）
-    lineStyle = None
-    shape = None
     for _ in range(2):
         modifierMatch = modifierRe.match(rest)
         if not modifierMatch:
             break
         name = modifierMatch.group(1)
         if name in lineStyleNames:
-            if lineStyle is not None:
-                diag.warn(f'{lineNo}行目: 線種名が2回指定されている。"{name};" はテキストの一部として扱う')
+            if info.lineType is not None:
+                reporter.warn(f'line {lineNo}: 線種名 "{name}" が重複している。テキストの一部として扱う')
                 break
-            lineStyle = lineStyleNames[name]
+            info.lineType = lineStyleNames[name]
         elif name in shapeNames:
-            if shape is not None:
-                diag.warn(f'{lineNo}行目: 形状名が2回指定されている。"{name};" はテキストの一部として扱う')
+            if info.shape is not None:
+                reporter.warn(f'line {lineNo}: 形状名 "{name}" が重複している。テキストの一部として扱う')
                 break
-            shape = shapeNames[name]
+            info.shape = shapeNames[name]
         else:
-            diag.warn(f'{lineNo}行目: "{name};" は既知の線種名・形状名ではない（書き間違いの可能性）。テキストの一部として扱う')
+            reporter.warn(f'line {lineNo}: "{name};" は未知の線種名・形状名である（書き間違いの可能性）。テキストの一部として扱う')
             break
         rest = rest[modifierMatch.end():].lstrip(' \t')
 
     # 4. テキスト
-    text = rest.strip(' \t')
-    return label, lineStyle, shape, text, color
+    info.text = stripBlank(rest)
+    return info
 
 
-def parseInput(sourceText, diag):
-    """入力全体を解析し、見出し行のリストを返す."""
-    entries = []
-    for index, rawLine in enumerate(sourceText.split('\n')):
+def parseLines(lines):
+    """入力の各行を解析し、見出し行の記録のリストを返す。"""
+    records = []
+    for index, rawLine in enumerate(lines):
         lineNo = index + 1
-        line = rawLine.rstrip('\r')
-        if line.strip(' \t') == '':
-            continue
-        headingMatch = headingRe.fullmatch(line)
-        if headingMatch is None:
-            if headingTypoRe.match(line):
-                diag.warn(f'{lineNo}行目: "#" の直後に空白が無い（見出し行の書き間違いの可能性）。この行を無視する')
+        line = rawLine.rstrip('\r\n')
+        headingMatch = headingRe.match(line)
+        if headingMatch:
+            level = len(headingMatch.group(1))
+            content = headingMatch.group(2)
+            if content is None or stripBlank(content) == '':
+                info = ContentInfo()
             else:
-                diag.warn(f'{lineNo}行目: 見出し行でも空行でもない行を無視する')
+                info = parseContent(content, lineNo)
+            records.append(HeadingRecord(lineNo, level, info))
+        elif line.strip() == '':
             continue
-        rawLevel = len(headingMatch.group(1))
-        content = headingMatch.group(2) or ''
-        label, lineStyle, shape, text, color = parseContent(content, lineNo, diag)
-        entries.append(HeadingEntry(lineNo, rawLevel, label, lineStyle, shape, text, color))
-    return entries
+        elif headingTypoRe.match(line):
+            reporter.warn(f'line {lineNo}: "#" の直後に空白が無い（見出し行の書き間違いの可能性）。無視する')
+        else:
+            reporter.warn(f'line {lineNo}: 見出し行でも空行でもない行である。無視する')
+    return records
 
 
-def assignNodeIds(roots):
-    """ノードID（5.1）を付与する."""
-    def assign(node, nodeId):
-        node.nodeId = nodeId
-        for childIndex, child in enumerate(node.children, start=1):
-            assign(child, f'{nodeId}_{childIndex}')
+# ---------------------------------------------------------------------------
+# 木構造（4.2, 5.1）
+# ---------------------------------------------------------------------------
 
-    for rootIndex, root in enumerate(roots, start=1):
-        assign(root, f'N{rootIndex}')
+class Node:
+    """木の節。"""
+
+    def __init__(self, record, level):
+        info = record.info
+        self.label = info.label
+        self.lineType = info.lineType
+        self.shape = info.shape
+        self.text = info.text
+        self.color = info.color
+        self.level = level
+        self.lineNo = record.lineNo
+        self.children = []
+        self.parent = None
+        self.nodeId = ''
 
 
-def buildTree(entries, includeEmpty, diag):
-    """見出し行のリストから木構造を構築する（4.2）."""
+class Tree:
+    """節の木（ルートは複数あり得る）。"""
+
+    def __init__(self, roots):
+        self.roots = roots
+
+    def allNodes(self):
+        """全節を深さ優先（出現順）で返す。"""
+        result = []
+        stack = list(reversed(self.roots))
+        while stack:
+            node = stack.pop()
+            result.append(node)
+            stack.extend(reversed(node.children))
+        return result
+
+    def maxLevel(self):
+        return max((node.level for node in self.allNodes()), default=0)
+
+    def nodesAtLevel(self, level):
+        return [node for node in self.allNodes() if node.level == level]
+
+
+def assignIds(nodes, prefix):
+    for index, node in enumerate(nodes, start=1):
+        node.nodeId = f'{prefix}{index}' if prefix == 'N' else f'{prefix}_{index}'
+        assignIds(node.children, node.nodeId)
+
+
+def buildTree(records, includeEmpty):
+    """見出し行の記録から木を構築する。includeEmpty=True で table系用の木となる。"""
     roots = []
     stack = []
     prevLevel = 0
-    for entry in entries:
-        if entry.isEmpty and not includeEmpty:
+    for record in records:
+        if record.isEmpty and not includeEmpty:
             continue
-        level = entry.rawLevel
+        level = record.level
         if level > prevLevel + 1:
             effectiveLevel = prevLevel + 1
-            if prevLevel == 0:
-                diag.warn(f'{entry.lineNo}行目: 先頭の見出し行のレベルが{level}である（レベル飛び）。ルート（レベル1）として扱う')
-            else:
-                diag.warn(f'{entry.lineNo}行目: レベル飛び（直前の見出し行のレベル{prevLevel}に対してレベル{level}）。'
-                          f'直前の見出し行の節の子（レベル{effectiveLevel}）として扱う')
-        else:
-            effectiveLevel = level
-        node = Node(entry, effectiveLevel)
-        del stack[effectiveLevel - 1:]
-        if effectiveLevel == 1:
+            reporter.warn(f'line {record.lineNo}: レベル飛び（レベル{level}、直前の見出しはレベル{prevLevel}）。'
+                          f'レベル{effectiveLevel}として扱う')
+            level = effectiveLevel
+        node = Node(record, level)
+        if level == 1:
             roots.append(node)
         else:
-            parent = stack[-1]
+            parent = stack[level - 2]
             parent.children.append(node)
             node.parent = parent
+        del stack[level - 1:]
         stack.append(node)
-        prevLevel = effectiveLevel
-    assignNodeIds(roots)
-    return roots
-
-
-def walkDepthFirst(roots):
-    """深さ優先（出現順）で全節を列挙する."""
-    result = []
-
-    def visit(node):
-        result.append(node)
-        for child in node.children:
-            visit(child)
-
-    for root in roots:
-        visit(root)
-    return result
-
-
-def walkBreadthFirst(root):
-    """幅優先で親子の組を列挙する（10.4）."""
-    pairs = []
-    queue = [root]
-    queueIndex = 0
-    while queueIndex < len(queue):
-        parent = queue[queueIndex]
-        queueIndex += 1
-        for child in parent.children:
-            pairs.append((parent, child))
-            queue.append(child)
-    return pairs
+        prevLevel = level
+    assignIds(roots, 'N')
+    return Tree(roots)
 
 
 # ---------------------------------------------------------------------------
-# 共通ヘルパー
+# 共通の補助関数
 # ---------------------------------------------------------------------------
 
 def quoteText(text):
-    """Mermaid 用に " を #quot; へ置換する（5.2）."""
+    """Mermaid向けに " を #quot; に置換する（5.2）。"""
     return text.replace('"', '#quot;')
 
 
-def shapeDefinition(node):
-    """Mermaid のノード定義（4.3）."""
-    openBracket, closeBracket = shapeBrackets[node.shape or 'rect']
-    return f'{node.nodeId}{openBracket}"{quoteText(node.text)}"{closeBracket}'
+def mermaidNodeDef(node):
+    """4.3 の書式でMermaidのノード定義を返す。"""
+    openMark, closeMark = shapeBrackets[node.shape or 'rect']
+    return f'{node.nodeId}{openMark}"{quoteText(node.text)}"{closeMark}'
 
 
-def styleLines(nodes):
-    """色・無枠の style 行（6章冒頭の共通規則）."""
-    lines = []
+def mermaidStyleLines(nodes):
+    """6章冒頭の色の出力規則による style 行のリストを返す。"""
+    result = []
     for node in nodes:
         if node.shape == 'borderless':
             if node.color:
-                lines.append(f'style {node.nodeId} fill:{node.color},stroke:none')
+                result.append(f'style {node.nodeId} fill:{node.color},stroke:none')
             else:
-                lines.append(f'style {node.nodeId} fill:none,stroke:none')
+                result.append(f'style {node.nodeId} fill:none,stroke:none')
         elif node.color:
-            lines.append(f'style {node.nodeId} fill:{node.color}')
-    return lines
+            result.append(f'style {node.nodeId} fill:{node.color}')
+    return result
+
+
+def blockEdge(sourceId, targetId, lineType, label, reverse):
+    """block の線の記法（5.3, 5.4）。"""
+    operator = blockSymbols[lineType]
+    if reverse:
+        operator = blockReverseSymbols.get(lineType, operator)
+    if label:
+        return f'{sourceId} -- "{quoteText(label)}" {operator} {targetId}'
+    return f'{sourceId} {operator} {targetId}'
 
 
 def spaceToken(count):
     return 'space' if count == 1 else f'space:{count}'
 
 
-def renderGridRow(cells):
-    """グリッド1行分を出力文字列にする（10.1）."""
+def renderGridRow(cells, width):
+    """1行分（width列）のセルを出力文字列にする。cells は 列(1始まり) → ノード定義。"""
     parts = []
     emptyRun = 0
-    for cell in cells:
-        if cell is None:
-            emptyRun += 1
-        else:
+    for col in range(1, width + 1):
+        if col in cells:
             if emptyRun:
                 parts.append(spaceToken(emptyRun))
                 emptyRun = 0
-            parts.append(cell)
+            parts.append(cells[col])
+        else:
+            emptyRun += 1
     if emptyRun:
         parts.append(spaceToken(emptyRun))
     return ' '.join(parts)
 
 
-def tightCoordinates(nodes, maxLevel):
-    """tight 時のレベル座標 t(L) と T を求める（10.1）."""
-    gapFlags = {level: 0 for level in range(1, maxLevel)}
-    for node in nodes:
-        if node.level >= 2 and node.label:
-            gapFlags[node.level - 1] = 1
-    levelCoord = {1: 1}
-    for level in range(1, maxLevel):
-        levelCoord[level + 1] = levelCoord[level] + 1 + gapFlags[level]
-    return levelCoord, levelCoord[maxLevel]
+def breadthFirstEdges(root):
+    """親→子の組を幅優先（10.4）で返す。"""
+    edges = []
+    queue = [root]
+    index = 0
+    while index < len(queue):
+        parent = queue[index]
+        index += 1
+        for child in parent.children:
+            edges.append((parent, child))
+            queue.append(child)
+    return edges
 
 
-def blockEdge(parentId, childId, lineStyle, label, reverse):
-    """block の線（5.3, 5.4）."""
-    symbol = blockSymbols[lineStyle]
-    if reverse and lineStyle in blockReverseSymbols:
-        symbol = blockReverseSymbols[lineStyle]
-    if label:
-        return f'{parentId} -- "{quoteText(label)}" {symbol} {childId}'
-    return f'{parentId} {symbol} {childId}'
+def requireSingleRoot(tree, typeId):
+    if len(tree.roots) != 1:
+        raise ConditionError(f'{typeId}: ルートがちょうど1個である必要がある（ルートが{len(tree.roots)}個ある）')
+    return tree.roots[0]
 
 
 def displayWidth(text):
-    """表示幅（8.3.2）."""
+    """表示幅（8.3.2）。"""
     return sum(2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1 for ch in text)
 
 
-def parsePieText(text):
-    """pie のスライス「名称:数値」を分解する。不適合なら None."""
-    if ':' not in text:
-        return None
-    name, value = text.rsplit(':', 1)
-    name = name.strip(' \t')
-    value = value.strip(' \t')
-    if name == '' or not numberRe.fullmatch(value):
-        return None
-    return name, value
+def textPixelWidth(text):
+    """star の推定幅 tw(s)（10.9.3）。"""
+    return sum(wideCharWidth if unicodedata.east_asian_width(ch) in ('W', 'F') else narrowCharWidth
+               for ch in text)
 
 
-def parseVennText(text):
-    """venn の「名称[:数値]」を分解する."""
-    if ':' in text:
-        name, value = text.rsplit(':', 1)
-        value = value.strip(' \t')
-        if numberRe.fullmatch(value):
-            return name.strip(' \t'), value
-    return text.strip(' \t'), None
+def levelGaps(tree, maxDepth):
+    """tight 用のレベル間のラベル有無 g(L)（10.1）。gapList[L] = g(L)。"""
+    gapList = [0] * (maxDepth + 1)
+    for node in tree.allNodes():
+        if node.level >= 2 and node.label:
+            gapList[node.level - 1] = 1
+    return gapList
 
 
-def formatCoordinate(hundredths):
-    """quadrant の座標表記（9.1）."""
-    if hundredths % 10 == 0:
-        return f'{hundredths / 100:.1f}'
-    return f'{hundredths / 100:.2f}'
+def tightLevelCoords(tree, maxDepth):
+    """tight 時のレベル座標 t(L) と T を返す（10.1）。"""
+    gapList = levelGaps(tree, maxDepth)
+    coords = [0] * (maxDepth + 1)
+    coords[1] = 1
+    for level in range(1, maxDepth):
+        coords[level + 1] = coords[level] + 1 + gapList[level]
+    return coords, coords[maxDepth]
 
 
 # ---------------------------------------------------------------------------
-# 入力条件（4.4）
+# 6.1 / 6.2 hier-mind / hier-mindlabel
 # ---------------------------------------------------------------------------
 
-def checkCondition(typeId, mainRoots, tableRoots):
-    """入力条件を判定し、違反があれば違反内容の文字列を返す."""
-    if typeId.startswith('hier-') or typeId == 'fishBone':
-        if len(mainRoots) != 1:
-            return f'ルートがちょうど1個であること（ルートが{len(mainRoots)}個ある）'
-        return None
+def generateMindmap(tree, opts, typeId, withLabel):
+    root = requireSingleRoot(tree, typeId)
+    nodes = tree.allNodes()
 
-    if typeId in tableTypeIds:
-        if len(tableRoots) < 1:
-            return 'ルートが1個以上であること'
-        if max(n.level for n in walkDepthFirst(tableRoots)) > 2:
-            return 'レベルが2以下であること（レベル3以上の節が存在する）'
-        return None
-
-    if typeId == 'struct-flow':
-        if len(mainRoots) < 1:
-            return 'ルートが1個以上であること'
-        return None
-
-    nodes = walkDepthFirst(mainRoots)
-
-    if typeId == 'pie':
-        if len(mainRoots) != 1:
-            return f'ルートがちょうど1個であること（ルートが{len(mainRoots)}個ある）'
-        slices = [n for n in nodes if n.level == 2]
-        if not slices:
-            return 'レベル2の節が1個以上であること'
-        if any(n.level >= 3 for n in nodes):
-            return 'レベル3以上の節が存在しないこと'
-        for node in slices:
-            if parsePieText(node.text) is None:
-                return f'レベル2の節が「名称:数値」形式であること（{node.lineNo}行目 "{node.text}"）'
-        return None
-
-    if typeId == 'venn':
-        if any(n.level > 3 for n in nodes):
-            return 'レベルが3以下であること（レベル4以上の節が存在する）'
-        level1Count = sum(1 for n in nodes if n.level == 1)
-        level2Count = sum(1 for n in nodes if n.level == 2)
-        level3Count = sum(1 for n in nodes if n.level == 3)
-        if not 1 <= level1Count <= 3:
-            return f'レベル1の節が1個以上3個以下であること（{level1Count}個ある）'
-        if level2Count > 3:
-            return f'レベル2の節が高々3個であること（{level2Count}個ある）'
-        if level3Count > 1:
-            return f'レベル3の節が高々1個であること（{level3Count}個ある）'
-        seenSets = 0
-        seenLevel2 = 0
-        requiredForLevel2 = [2, 3, 3]
-        for node in nodes:
-            name, _ = parseVennText(node.text)
-            if name == '':
-                return f'全節の名称が空でないこと（{node.lineNo}行目）'
-            if node.level == 1:
-                seenSets += 1
-            elif node.level == 2:
-                seenLevel2 += 1
-                if seenSets < requiredForLevel2[seenLevel2 - 1]:
-                    return (f'対応集合の出現（{node.lineNo}行目の{seenLevel2}番目のレベル2の領域に必要な集合が'
-                            f'それより前に出現していない）')
-            else:
-                if seenSets < 3:
-                    return f'対応集合の出現（{node.lineNo}行目のレベル3の領域に必要な集合 N1・N2・N3 がそれより前に出現していない）'
-        return None
-
-    if typeId == 'quadrant':
-        if len(mainRoots) != 2:
-            return f'ルートがちょうど2個であること（ルートが{len(mainRoots)}個ある）'
-        if any(n.level >= 4 for n in nodes):
-            return 'レベル4以上の節が存在しないこと'
-        for root in mainRoots:
-            if len(root.children) != 2:
-                return f'レベル2の節が各ルートにちょうど2個であること（{root.lineNo}行目のルートに{len(root.children)}個ある）'
-            for child in root.children:
-                if not 1 <= len(child.children) <= 9:
-                    return (f'レベル3の節が各レベル2節に1個以上9個以下であること'
-                            f'（{child.lineNo}行目の節に{len(child.children)}個ある）')
-        return None
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# 図種別の生成
-# ---------------------------------------------------------------------------
-
-def generateMindmap(roots, options, labelMode, typeId, diag):
-    """hier-mind / hier-mindlabel（6.1, 6.2）."""
-    root = roots[0]
-    nodes = walkDepthFirst(roots)
-
-    if any(n.shape not in (None, 'borderless', 'rounded') for n in nodes):
-        diag.warn(f'{typeId}: PlantUML mindmapでは枠の形状を表現できない（「無枠」「角丸」以外の形状指定を無視する）')
-    if any(n.lineStyle for n in nodes):
-        diag.warn(f'{typeId}: PlantUML mindmapでは節ごとの線種を変更できない（線種名指定を無視する）')
-
-    direction = options['direction']
+    direction = opts.direction
     if direction == 'BT':
-        diag.warn(f'{typeId}: PlantUML mindmapでは方向 BT はサポートされていないため、TB として扱う')
+        reporter.warn(f'{typeId}: PlantUML mindmapでは --direction BT はサポートされていない。TB として扱う')
         direction = 'TB'
-    directionLine = {
-        'TB': 'top to bottom direction', 'TD': 'top to bottom direction',
-        'LR': 'left to right direction', 'RL': 'right to left direction',
-    }[direction]
+    if direction == 'TD':
+        direction = 'TB'
 
-    lineStyle = options['line']
+    lineStyle = opts.line
     if lineStyle.endswith('Arrow'):
-        plainStyle = lineStyle[:-len('Arrow')]
-        diag.warn(f'{typeId}: PlantUML mindmapでは矢印を付けられないため、--line {lineStyle} を {plainStyle} として扱う')
-        lineStyle = plainStyle
+        reporter.warn(f'{typeId}: PlantUML mindmapでは矢印を付けられない。--line {lineStyle} を '
+                      f'{lineStyle[:-5]} として扱う')
+        lineStyle = lineStyle[:-5]
 
-    layout = options['layout']
-    if layout == 'tight':
+    if any(node.shape not in (None, 'borderless', 'rounded') for node in nodes):
+        reporter.warn(f'{typeId}: PlantUML mindmapでは枠の形状を表現できない。形状の指定を無視する')
+    if any(node.lineType is not None for node in nodes):
+        reporter.warn(f'{typeId}: PlantUML mindmapでは節ごとの線種を変更できない。線種名の指定を無視する')
+    if withLabel and root.label:
+        reporter.warn(f'line {root.lineNo}: {typeId}: ルートのラベルは無視する')
+
+    if opts.layout == 'tight':
         padding, margin = 3, 2
-    elif layout == 'normal':
+    elif opts.layout == 'normal':
         padding, margin = 3, 5
     else:
         padding, margin = 5, 10
@@ -571,10 +513,9 @@ def generateMindmap(roots, options, labelMode, typeId, diag):
     out = ['@startmindmap', '<style>', 'mindmapDiagram {',
            '  node {', '    RoundCorner 0', f'    Padding {padding}', f'    Margin {margin}', '  }']
     for node in nodes:
-        isRounded = node.shape == 'rounded'
-        if node.color or isRounded:
+        if node.shape == 'rounded' or node.color:
             out.append(f'  .{node.nodeId}Node {{')
-            if isRounded:
+            if node.shape == 'rounded':
                 out.append('    RoundCorner 8')
             if node.color:
                 out.append(f'    BackgroundColor {node.color}')
@@ -583,69 +524,69 @@ def generateMindmap(roots, options, labelMode, typeId, diag):
         out += ['  arrow {', '    LineStyle 2-2', '  }']
     elif lineStyle == 'thick':
         out += ['  arrow {', '    LineThickness 4', '  }']
-    out += ['}', '</style>', directionLine]
+    out += ['}', '</style>']
+    out.append({'TB': 'top to bottom direction', 'LR': 'left to right direction',
+                'RL': 'right to left direction'}[direction])
 
-    if labelMode and root.label:
-        diag.warn(f'{typeId}: {root.lineNo}行目: ルートのラベル "{root.label}" は無視する')
-
-    isVertical = direction in ('TB', 'TD')
-    if lineStyle == 'dotted':
-        alternativeLabel = ':' if isVertical else '\u2026'
+    if direction == 'TB':
+        altLabel = ':' if lineStyle == 'dotted' else '|'
     else:
-        alternativeLabel = '|' if isVertical else '-'
+        altLabel = '…' if lineStyle == 'dotted' else '-'
 
-    def nodeLine(node, depth):
-        marker = '*' * depth + ('_' if node.shape == 'borderless' else '')
-        suffix = f' <<{node.nodeId}Node>>' if (node.color or node.shape == 'rounded') else ''
-        return f'{marker} {node.text}{suffix}'
+    def bodyLine(node, depth):
+        mark = '*' * depth + ('_' if node.shape == 'borderless' else '')
+        suffix = f' <<{node.nodeId}Node>>' if (node.shape == 'rounded' or node.color) else ''
+        return f'{mark} {node.text}{suffix}'
 
     def emit(node, depth):
-        out.append(nodeLine(node, depth))
-        groupHasLabel = labelMode and any(child.label for child in node.children)
+        out.append(bodyLine(node, depth))
+        hasLabel = withLabel and any(child.label for child in node.children)
         for child in node.children:
-            if groupHasLabel:
-                out.append('*' * (depth + 1) + '_ ' + (child.label or alternativeLabel))
+            if hasLabel:
+                out.append('*' * (depth + 1) + '_ ' + (child.label if child.label else altLabel))
                 emit(child, depth + 2)
             else:
                 emit(child, depth + 1)
 
     emit(root, 1)
     out.append('@endmindmap')
-    return '\n'.join(out)
+    return out
 
 
-def generateFlowchart(roots, options):
-    """hier-flow（6.3）."""
-    root = roots[0]
-    direction = options['direction']
-    reverse = options['arrowDirection'] == 'reverse'
-    isVertical = direction in ('TB', 'TD', 'BT')
+# ---------------------------------------------------------------------------
+# 6.3 hier-flow
+# ---------------------------------------------------------------------------
+
+def generateHierFlow(tree, opts):
+    root = requireSingleRoot(tree, 'hier-flow')
+    reverse = opts.arrowDirection == 'reverse'
+    flowDirection = reverseDirection[opts.direction] if reverse else opts.direction
+    isHorizontal = opts.direction in ('LR', 'RL')
 
     padding, nodeSpacing, rankSpacing = 8, 30, 30
-    layout = options['layout']
+    layout = opts.layout
     if layout == 'tight':
         nodeSpacing = rankSpacing = 15
     elif layout == 'spacyXY':
         nodeSpacing = rankSpacing = 50
     elif layout == 'spacyX':
-        if isVertical:
-            nodeSpacing = 50
-        else:
+        if isHorizontal:
             rankSpacing = 50
+        else:
+            nodeSpacing = 50
     elif layout == 'spacyY':
-        if isVertical:
-            rankSpacing = 50
-        else:
+        if isHorizontal:
             nodeSpacing = 50
+        else:
+            rankSpacing = 50
     elif layout == 'spacyPadding':
         padding = 16
 
-    out = ['---', 'config:', '  flowchart:', f'    padding: {padding}',
-           f'    nodeSpacing: {nodeSpacing}', f'    rankSpacing: {rankSpacing}',
-           '    diagramPadding: 5', '---']
-    if options['curve'] != 'default':
-        out.append('%%{init:{"flowchart":{"curve":"' + options['curve'] + '"}}}%%')
-    out.append('flowchart ' + (reverseDirection[direction] if reverse else direction))
+    out = ['---', 'config:', '  flowchart:', f'    padding: {padding}', f'    nodeSpacing: {nodeSpacing}',
+           f'    rankSpacing: {rankSpacing}', '    diagramPadding: 5', '---']
+    if opts.curve != 'default':
+        out.append('%%{init:{"flowchart":{"curve":"' + opts.curve + '"}}}%%')
+    out.append('flowchart ' + flowDirection)
 
     definedIds = set()
 
@@ -653,368 +594,618 @@ def generateFlowchart(roots, options):
         if node.nodeId in definedIds:
             return node.nodeId
         definedIds.add(node.nodeId)
-        return shapeDefinition(node)
+        return mermaidNodeDef(node)
 
-    pairs = walkBreadthFirst(root)
-    if not pairs:
-        out.append(reference(root))
-    for parent, child in pairs:
-        symbol = flowSymbols[child.lineStyle or options['line']]
-        labelPart = f'|"{quoteText(child.label)}"|' if child.label else ''
-        if reverse:
-            leftText = reference(child)
-            rightText = reference(parent)
+    edges = breadthFirstEdges(root)
+    if not edges:
+        out.append(mermaidNodeDef(root))
+    for parent, child in edges:
+        operator = flowSymbols[child.lineType or opts.line]
+        left, right = (child, parent) if reverse else (parent, child)
+        leftText = reference(left)
+        rightText = reference(right)
+        if child.label:
+            out.append(f'{leftText} {operator} |"{quoteText(child.label)}"|{rightText}')
         else:
-            leftText = reference(parent)
-            rightText = reference(child)
-        if labelPart:
-            out.append(f'{leftText} {symbol} {labelPart}{rightText}')
-        else:
-            out.append(f'{leftText} {symbol} {rightText}')
+            out.append(f'{leftText} {operator} {rightText}')
 
-    styles = styleLines(walkDepthFirst(roots))
+    styles = mermaidStyleLines(tree.allNodes())
     if styles:
         out.append('')
         out += styles
-    return '\n'.join(out)
+    return out
 
 
-def blockFrontmatter():
-    return ['---', 'config:', '  block:', '    padding: 30', '---']
+# ---------------------------------------------------------------------------
+# 6.4 / 10.2〜10.4 hier-block
+# ---------------------------------------------------------------------------
 
-
-def generateHierBlock(roots, options):
-    """hier-block（6.4, 10.2〜10.4）."""
-    root = roots[0]
-    nodes = walkDepthFirst(roots)
-    maxLevel = max(n.level for n in nodes)
-    layout = options['layout']
-    direction = options['direction']
-    reverse = options['arrowDirection'] == 'reverse'
-    isSpacyX = layout in ('spacyX', 'spacyXY')
-    isSpacyY = layout in ('spacyY', 'spacyXY')
-    isTight = layout == 'tight'
-
-    # 10.2 位置決定
+def computeLeafPositions(root):
+    """10.2 の位置決定。節 → 位置 の辞書と葉の総数を返す。"""
     positions = {}
     leafCounter = [0]
 
-    def assignPosition(node):
+    def visit(node):
         if not node.children:
             leafCounter[0] += 1
-            positions[node.nodeId] = leafCounter[0]
+            positions[node] = leafCounter[0]
             return
         for child in node.children:
-            assignPosition(child)
-        childPositions = [positions[c.nodeId] for c in node.children]
-        positions[node.nodeId] = (min(childPositions) + max(childPositions)) // 2
+            visit(child)
+        childPositions = [positions[child] for child in node.children]
+        positions[node] = (min(childPositions) + max(childPositions)) // 2
 
-    assignPosition(root)
-    leafCount = leafCounter[0]
-    levelCoord, tightTotal = tightCoordinates(nodes, maxLevel)
+    visit(root)
+    return positions, leafCounter[0]
 
-    # 10.3 グリッドへの展開
-    cellOf = {}
-    if direction in ('TB', 'TD', 'BT'):
-        width = 2 * leafCount - 1 if isSpacyX else leafCount
+
+def generateHierBlock(tree, opts):
+    root = requireSingleRoot(tree, 'hier-block')
+    direction = 'TB' if opts.direction == 'TD' else opts.direction
+    layout = opts.layout
+    isTight = layout == 'tight'
+    isSpacyX = layout in ('spacyX', 'spacyXY')
+    isSpacyY = layout in ('spacyY', 'spacyXY')
+
+    positions, leafCount = computeLeafPositions(root)
+    maxDepth = tree.maxLevel()
+    tightCoords, tightTotal = tightLevelCoords(tree, maxDepth)
+    nodes = tree.allNodes()
+
+    grid = {}
+    if direction in ('TB', 'BT'):
+        if isSpacyX:
+            width = 2 * leafCount - 1
+            colOf = lambda p: 2 * p - 1
+        else:
+            width = leafCount
+            colOf = lambda p: p
         if isTight:
+            rowOfLevel = lambda level: tightCoords[level]
             rowCount = tightTotal
         elif isSpacyY:
-            rowCount = 3 * maxLevel - 2
+            rowOfLevel = lambda level: 3 * level - 2
+            rowCount = 3 * maxDepth - 2
         else:
-            rowCount = 2 * maxLevel - 1
+            rowOfLevel = lambda level: 2 * level - 1
+            rowCount = 2 * maxDepth - 1
         for node in nodes:
-            position = positions[node.nodeId]
-            column = 2 * position - 1 if isSpacyX else position
-            if isTight:
-                row = levelCoord[node.level]
-            elif isSpacyY:
-                row = 3 * node.level - 2
-            else:
-                row = 2 * node.level - 1
+            row = rowOfLevel(node.level)
             if direction == 'BT':
                 row = rowCount + 1 - row
-            cellOf[node.nodeId] = (row, column)
+            grid.setdefault(row, {})[colOf(positions[node])] = mermaidNodeDef(node)
     else:
         if isTight:
+            colOfLevel = lambda level: tightCoords[level]
             width = tightTotal
         elif isSpacyX:
-            width = 3 * maxLevel - 2
+            colOfLevel = lambda level: 3 * level - 2
+            width = 3 * maxDepth - 2
         else:
-            width = 2 * maxLevel - 1
-        rowCount = 2 * leafCount - 1 if isSpacyY else leafCount
+            colOfLevel = lambda level: 2 * level - 1
+            width = 2 * maxDepth - 1
+        if isSpacyY:
+            rowOf = lambda p: 2 * p - 1
+            rowCount = 2 * leafCount - 1
+        else:
+            rowOf = lambda p: p
+            rowCount = leafCount
         for node in nodes:
-            position = positions[node.nodeId]
-            if isTight:
-                column = levelCoord[node.level]
-            elif isSpacyX:
-                column = 3 * node.level - 2
-            else:
-                column = 2 * node.level - 1
+            col = colOfLevel(node.level)
             if direction == 'RL':
-                column = width + 1 - column
-            row = 2 * position - 1 if isSpacyY else position
-            cellOf[node.nodeId] = (row, column)
-
-    grid = [[None] * width for _ in range(rowCount)]
-    for node in nodes:
-        row, column = cellOf[node.nodeId]
-        grid[row - 1][column - 1] = shapeDefinition(node)
+                col = width + 1 - col
+            grid.setdefault(rowOf(positions[node]), {})[col] = mermaidNodeDef(node)
 
     out = []
     if layout == 'spacyPadding':
-        out += blockFrontmatter()
+        out += blockPaddingFrontmatter
     out += ['block', f'columns {width}']
-    out += [renderGridRow(cells) for cells in grid]
+    for row in range(1, rowCount + 1):
+        out.append(renderGridRow(grid.get(row, {}), width))
 
-    # 10.4 線の出力順
-    edges = [blockEdge(parent.nodeId, child.nodeId, child.lineStyle or options['line'], child.label, reverse)
-             for parent, child in walkBreadthFirst(root)]
-    if edges:
+    reverse = opts.arrowDirection == 'reverse'
+    edgeLines = [blockEdge(parent.nodeId, child.nodeId, child.lineType or opts.line, child.label, reverse)
+                 for parent, child in breadthFirstEdges(root)]
+    if edgeLines:
         out.append('')
-        out += edges
-    styles = styleLines(nodes)
+        out += edgeLines
+    styles = mermaidStyleLines(nodes)
     if styles:
         out.append('')
         out += styles
-    return '\n'.join(out)
+    return out
 
 
-def generateStructFlow(roots, options):
-    """struct-flow（10.5〜10.6）."""
-    nodes = walkDepthFirst(roots)
-    maxLevel = max(n.level for n in nodes)
-    layout = options['layout']
-    isSpacyX = layout in ('spacyX', 'spacyXY')
-    isSpacyY = layout in ('spacyY', 'spacyXY')
-    levelCoord, tightTotal = tightCoordinates(nodes, maxLevel)
+# ---------------------------------------------------------------------------
+# 7 fishBone
+# ---------------------------------------------------------------------------
 
+def generateFishBone(tree, opts):
+    requireSingleRoot(tree, 'fishBone')
+    out = ['ishikawa-beta']
+    for node in tree.allNodes():
+        out.append(' ' * (2 * node.level) + node.text)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 8.1 pie
+# ---------------------------------------------------------------------------
+
+def parsePieSlice(text):
+    """「名称:数値」を分解する。合致しなければ None。"""
+    if ':' not in text:
+        return None
+    name, value = text.rsplit(':', 1)
+    name, value = stripBlank(name), stripBlank(value)
+    if name == '' or not numberRe.fullmatch(value):
+        return None
+    return name, value
+
+
+def generatePie(tree, opts):
+    root = requireSingleRoot(tree, 'pie')
+    if not root.children:
+        raise ConditionError('pie: レベル2の節が1個以上必要である')
+    if tree.maxLevel() > 2:
+        raise ConditionError('pie: レベル3以上の節が存在してはならない')
+    slices = []
+    for child in root.children:
+        parsed = parsePieSlice(child.text)
+        if parsed is None:
+            raise ConditionError(f'pie: line {child.lineNo}: レベル2の節が「名称:数値」形式でない（"{child.text}"）')
+        slices.append((parsed[0], parsed[1], child.color))
+    if len(slices) >= 13:
+        reporter.warn(f'pie: スライスが{len(slices)}個ある。Mermaidのテーマ変数は pie1〜pie12 までのため、'
+                      '13個目以降の色指定は無視する')
+
+    themeItems = []
+    for index, (_, _, color) in enumerate(slices, start=1):
+        if color and index <= 12:
+            themeItems.append(f'"pie{index}":"{color}"')
+    themeItems.append('"pieOpacity":1')
+
+    out = ['%%{init: {"theme":"base","themeVariables":{']
+    for index, item in enumerate(themeItems):
+        out.append('  ' + item + (',' if index < len(themeItems) - 1 else ''))
+    out.append('}}}%%')
+    out += ['pie showData', f'title {root.text}']
+    for name, value, _ in slices:
+        out.append(f'"{quoteText(name)}" : {value}')
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 8.2 venn
+# ---------------------------------------------------------------------------
+
+vennLevel2Sets = [(1, 2), (1, 3), (2, 3)]
+
+
+def parseVennName(text):
+    if ':' in text:
+        name, value = text.rsplit(':', 1)
+        value = stripBlank(value)
+        if numberRe.fullmatch(value):
+            return stripBlank(name), value
+    return text, None
+
+
+def generateVenn(tree, opts):
+    nodes = tree.allNodes()
+    if tree.maxLevel() > 3:
+        raise ConditionError('venn: レベルは3以下である必要がある')
+    level1Count = len(tree.nodesAtLevel(1))
+    level2Count = len(tree.nodesAtLevel(2))
+    level3Count = len(tree.nodesAtLevel(3))
+    if not 1 <= level1Count <= 3:
+        raise ConditionError(f'venn: レベル1は1個以上3個以下である必要がある（{level1Count}個ある）')
+    if level2Count > 3:
+        raise ConditionError(f'venn: レベル2は高々3個である必要がある（{level2Count}個ある）')
+    if level3Count > 1:
+        raise ConditionError(f'venn: レベル3は高々1個である必要がある（{level3Count}個ある）')
+
+    bodyLines = []
+    styleLines = []
+    setsSeen = 0
+    level2Seen = 0
+    for node in nodes:
+        name, value = parseVennName(node.text)
+        if name == '':
+            raise ConditionError(f'venn: line {node.lineNo}: 名称が空である')
+        if node.level == 1:
+            setsSeen += 1
+            region = f'N{setsSeen}'
+            line = f'  set {region}["{quoteText(name)}"]'
+        else:
+            if node.level == 2:
+                required = vennLevel2Sets[level2Seen]
+                level2Seen += 1
+            else:
+                required = (1, 2, 3)
+            if max(required) > setsSeen:
+                needed = '・'.join(f'N{k}' for k in required)
+                raise ConditionError(f'venn: line {node.lineNo}: 領域 "{name}" に必要な集合（{needed}）が'
+                                     'それより前に出現していない')
+            region = ','.join(f'N{k}' for k in required)
+            line = f'  union {region}["{quoteText(name)}"]'
+        if value is not None:
+            line += f':{value}'
+        bodyLines.append(line)
+        if node.color:
+            styleLines.append(f'  style {region} fill:{node.color}')
+
+    out = ['venn-beta'] + bodyLines
+    if styleLines:
+        out.append('')
+        out += styleLines
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 8.3 table系
+# ---------------------------------------------------------------------------
+
+tableSettings = {
+    'table': (None, False), 'tablec': (None, True),
+    'table1': (1, False), 'table1c': (1, True),
+    'table2': (2, False), 'table2c': (2, True),
+    'table3': (3, False), 'table3c': (3, True),
+}
+
+
+def generateTable(tableTree, opts, typeId):
+    if not tableTree.roots:
+        raise ConditionError(f'{typeId}: ルートが1個以上必要である')
+    if tableTree.maxLevel() > 2:
+        raise ConditionError(f'{typeId}: レベル3以上の節が存在してはならない')
+    boldColumn, centering = tableSettings[typeId]
+
+    # 8.3.0 空セルの置換
+    rows = []
+    for root in tableTree.roots:
+        texts = [root.text] + [child.text for child in root.children]
+        rows.append([fullWidthSpace if text.replace(' ', '').replace('\t', '') == '' else text
+                     for text in texts])
+
+    columnWidths = {}
+    if centering:
+        for cells in rows:
+            for colIndex, text in enumerate(cells):
+                columnWidths[colIndex] = max(columnWidths.get(colIndex, 0), displayWidth(text))
+
+    out = ['@startsalt', '{#']
+    for rowIndex, cells in enumerate(rows):
+        cellStrings = []
+        for colIndex, text in enumerate(cells):
+            cellText = text
+            # 8.3.1 太字化
+            if boldColumn is not None and (rowIndex == 0 or colIndex == boldColumn - 1):
+                cellText = f'<b>{cellText}</b>'
+            # 8.3.2 センタリング
+            if centering:
+                padWidth = columnWidths[colIndex] - displayWidth(text)
+                spaceCount = padWidth // 2
+                leftCount = spaceCount // 2
+                rightCount = spaceCount - leftCount
+                if colIndex == len(cells) - 1:
+                    rightCount = 0
+                cellText = fullWidthSpace * leftCount + cellText + fullWidthSpace * rightCount
+            cellStrings.append(cellText)
+        out.append('| ' + ' | '.join(cellStrings))
+    out += ['}', '@endsalt']
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 9 quadrant
+# ---------------------------------------------------------------------------
+
+def formatHundredths(value):
+    """小数第2位までの値（100倍した整数）を 9.1 の表記で返す。"""
+    if value % 10 == 0:
+        return f'{value // 100}.{(value % 100) // 10}'
+    return f'{value // 100}.{value % 100:02d}'
+
+
+def generateQuadrant(tree, opts):
+    roots = tree.roots
+    if len(roots) != 2:
+        raise ConditionError(f'quadrant: ルートがちょうど2個である必要がある（{len(roots)}個ある）')
+    for root in roots:
+        if len(root.children) != 2:
+            raise ConditionError(f'quadrant: レベル2の節が各ルートにちょうど2個必要である（"{root.text}" の子は'
+                                 f'{len(root.children)}個）')
+        for child in root.children:
+            if not 1 <= len(child.children) <= 9:
+                raise ConditionError(f'quadrant: レベル3の節が各レベル2節に1個以上9個以下必要である（"{child.text}" の子は'
+                                     f'{len(child.children)}個）')
+    if tree.maxLevel() > 3:
+        raise ConditionError('quadrant: レベル4以上の節が存在してはならない')
+
+    leftBottom, leftTop = roots[0].children
+    rightBottom, rightTop = roots[1].children
+    quadrantNodes = {1: rightTop, 2: leftTop, 3: leftBottom, 4: rightBottom}
+
+    out = []
+    fills = [(k, quadrantNodes[k].color) for k in (1, 2, 3, 4) if quadrantNodes[k].color]
+    if fills:
+        out += ['---', 'config:', '  themeVariables:']
+        for k, color in fills:
+            out.append(f'    quadrant{k}Fill: "{color}"')
+        out.append('---')
+    out.append('quadrantChart')
+    out.append(f'  x-axis "{quoteText(roots[0].text)}" --> "{quoteText(roots[1].text)}"')
+    out.append(f'  y-axis "{quoteText(leftBottom.text)}" --> "{quoteText(leftTop.text)}"')
+    for k in (1, 2, 3, 4):
+        out.append(f'  quadrant-{k} "{quoteText(quadrantNodes[k].children[0].text)}"')
+    for rootIndex, root in enumerate(roots):
+        xValue = 25 if rootIndex == 0 else 75
+        for childIndex, child in enumerate(root.children):
+            baseY = 40 if childIndex == 0 else 90
+            for pointIndex, point in enumerate(child.children[1:], start=1):
+                yValue = baseY - 5 * (pointIndex - 1)
+                out.append(f'  "{quoteText(point.text)}": [{formatHundredths(xValue)}, '
+                           f'{formatHundredths(yValue)}] radius:0')
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 10.5〜10.6 struct-flow
+# ---------------------------------------------------------------------------
+
+def generateStructFlow(tree, opts):
+    roots = tree.roots
+    if not roots:
+        raise ConditionError('struct-flow: ルートが1個以上必要である')
+    layout = opts.layout
+    maxDepth = tree.maxLevel()
+    tightCoords, tightTotal = tightLevelCoords(tree, maxDepth)
     if layout == 'tight':
+        colOfLevel = lambda level: tightCoords[level]
         width = tightTotal
-    elif isSpacyX:
-        width = 3 * maxLevel - 2
+    elif layout in ('spacyX', 'spacyXY'):
+        colOfLevel = lambda level: 3 * level - 2
+        width = 3 * maxDepth - 2
     else:
-        width = 2 * maxLevel - 1
+        colOfLevel = lambda level: 2 * level - 1
+        width = 2 * maxDepth - 1
+    isSpacyY = layout in ('spacyY', 'spacyXY')
 
-    def columnOf(node):
-        if layout == 'tight':
-            return levelCoord[node.level]
-        if isSpacyX:
-            return 3 * node.level - 2
-        return 2 * node.level - 1
-
-    # 行の割り当て（ルートごとのグループ）
     groups = []
     for root in roots:
-        groupRows = []
+        rows = []
 
-        def place(node, rowIndex):
-            if rowIndex is None:
-                groupRows.append([None] * width)
-                rowIndex = len(groupRows) - 1
-            groupRows[rowIndex][columnOf(node) - 1] = shapeDefinition(node)
+        def place(node, sameRow):
+            if not sameRow:
+                rows.append({})
+            rows[-1][colOfLevel(node.level)] = mermaidNodeDef(node)
             for childIndex, child in enumerate(node.children):
-                place(child, rowIndex if childIndex == 0 else None)
+                place(child, childIndex == 0)
 
-        place(root, None)
-        groups.append([renderGridRow(cells) for cells in groupRows])
+        place(root, False)
+        groups.append(rows)
 
     out = []
     if layout == 'spacyPadding':
-        out += blockFrontmatter()
+        out += blockPaddingFrontmatter
     out += ['block', f'columns {width}']
     blankRow = spaceToken(width)
-    for groupIndex, groupRows in enumerate(groups):
+    for groupIndex, rows in enumerate(groups):
         if groupIndex > 0:
             out.append('')
             if isSpacyY:
                 out.append(blankRow)
-        for rowIndex, rowText in enumerate(groupRows):
+        for rowIndex, cells in enumerate(rows):
             if rowIndex > 0 and isSpacyY:
                 out.append(blankRow)
-            out.append(rowText)
+            out.append(renderGridRow(cells, width))
 
-    # 10.6 線
-    defaultLine = options['line']
-
-    def subtreeEdges(node, edgeList):
+    def subtreeLines(node):
+        result = []
         for childIndex, child in enumerate(node.children):
-            lineStyle = child.lineStyle or defaultLine
-            if child.label:
-                edgeList.append(blockEdge(node.nodeId, child.nodeId, lineStyle, child.label, False))
-            elif childIndex == 0:
-                edgeList.append(blockEdge(node.nodeId, child.nodeId, lineStyle, None, False))
+            if child.label or childIndex == 0:
+                source = node
             else:
-                previous = node.children[childIndex - 1]
-                edgeList.append(blockEdge(previous.nodeId, child.nodeId, lineStyle, None, False))
-            subtreeEdges(child, edgeList)
+                source = node.children[childIndex - 1]
+            result.append(blockEdge(source.nodeId, child.nodeId, child.lineType or opts.line, child.label, False))
+            result += subtreeLines(child)
+        return result
 
-    edgeGroups = []
-    for rootIndex, root in enumerate(roots):
-        edgeList = []
-        if rootIndex > 0:
-            previousRoot = roots[rootIndex - 1]
-            edgeList.append(blockEdge(previousRoot.nodeId, root.nodeId,
-                                      root.lineStyle or defaultLine, None, False))
-        subtreeEdges(root, edgeList)
-        if edgeList:
-            edgeGroups.append(edgeList)
-    for edgeList in edgeGroups:
+    segments = [subtreeLines(roots[0])]
+    for rootIndex in range(1, len(roots)):
+        previous, current = roots[rootIndex - 1], roots[rootIndex]
+        segment = [blockEdge(previous.nodeId, current.nodeId, current.lineType or opts.line, None, False)]
+        segment += subtreeLines(current)
+        segments.append(segment)
+    segments = [segment for segment in segments if segment]
+    if segments:
         out.append('')
-        out += edgeList
+        for segmentIndex, segment in enumerate(segments):
+            if segmentIndex > 0:
+                out.append('')
+            out += segment
 
-    styles = styleLines(nodes)
+    styles = mermaidStyleLines(tree.allNodes())
     if styles:
         out.append('')
         out += styles
-    return '\n'.join(out)
+    return out
 
 
-def generateFishBone(roots):
-    """fishBone（7章）."""
-    out = ['ishikawa-beta']
-    for node in walkDepthFirst(roots):
-        out.append(' ' * (2 * node.level) + node.text)
-    return '\n'.join(out)
+# ---------------------------------------------------------------------------
+# 10.8〜10.10 star
+# ---------------------------------------------------------------------------
+
+def estimateBlockSize(node):
+    """ブロックの推定寸法（10.9.3）。"""
+    textWidth = textPixelWidth(node.text)
+    shape = node.shape or 'rect'
+    if shape == 'cyl':
+        return textWidth + 6, 43 + 0.18 * textWidth
+    if shape == 'circle':
+        diameter = math.hypot(textWidth, labelHeight) + 6
+        return diameter, diameter
+    if shape == 'dbl-circ':
+        diameter = math.hypot(textWidth, labelHeight) + 24
+        return diameter, diameter
+    if shape == 'diam':
+        return textWidth + 38, textWidth + 38
+    return textWidth + blockPaddingX, blockHeight
 
 
-def generatePie(roots, diag):
-    """pie（8.1）."""
-    root = roots[0]
-    slices = []
-    for child in root.children:
-        name, value = parsePieText(child.text)
-        slices.append((name, value, child.color))
-    if len(slices) >= 13:
-        diag.warn(f'pie: スライスが{len(slices)}個ある（Mermaidのテーマ変数は pie1〜pie12 まで）。'
-                  '13個目以降の色指定は無視する')
-    themeItems = []
-    for sliceIndex, (_, _, color) in enumerate(slices[:12], start=1):
-        if color:
-            themeItems.append(f'"pie{sliceIndex}":"{color}"')
-    themeItems.append('"pieOpacity":1')
-    out = ['%%{init: {"theme":"base","themeVariables":{']
-    for itemIndex, item in enumerate(themeItems):
-        out.append('  ' + item + (',' if itemIndex < len(themeItems) - 1 else ''))
-    out.append('}}}%%')
-    out.append('pie showData')
-    out.append(f'title {root.text}')
-    for name, value, _ in slices:
-        out.append(f'"{quoteText(name)}" : {value}')
-    return '\n'.join(out)
+def roundHalfAway(value):
+    if value == 0:
+        return 0
+    sign = 1 if value > 0 else -1
+    return sign * math.floor(abs(value) + 0.5)
 
 
-def generateVenn(roots):
-    """venn（8.2）."""
-    level2Sets = ['N1,N2', 'N1,N3', 'N2,N3']
-    out = ['venn-beta']
-    styles = []
-    level1Count = 0
-    level2Count = 0
-    for node in walkDepthFirst(roots):
-        name, value = parseVennText(node.text)
-        valuePart = f':{value}' if value is not None else ''
-        if node.level == 1:
-            level1Count += 1
-            region = f'N{level1Count}'
-            out.append(f'  set {region}["{quoteText(name)}"]{valuePart}')
-        else:
-            if node.level == 2:
-                level2Count += 1
-                region = level2Sets[level2Count - 1]
+class StarGeometry:
+    """star の配置計算に用いる寸法一式。"""
+
+    def __init__(self, root, opts):
+        self.span = opts.spanValue
+        self.degree = opts.degreeValue
+        (self.minLineLength, self.labelMargin,
+         self.minBlockGap, self.cellGap) = starLayoutValues[opts.layout]
+        peripherals = root.children
+        self.count = len(peripherals)
+        sizes = [estimateBlockSize(node) for node in [root] + peripherals]
+        naturalWidth = opts.blockWidthValue if opts.blockWidthValue is not None else max(w for w, _ in sizes)
+        self.cellHeight = max(h for _, h in sizes)
+        columnWidth = naturalWidth / self.span
+        self.colPitch = columnWidth + self.cellGap
+        self.rowPitch = self.cellHeight + self.cellGap
+        self.drawnWidth = columnWidth * self.span + self.cellGap * (self.span - 1)
+        self.needs = []
+        for node in peripherals:
+            if node.label:
+                needX = textPixelWidth(node.label) + labelPaddingX + 2 * self.labelMargin
+                needY = labelHeight + 2 * self.labelMargin
             else:
-                region = 'N1,N2,N3'
-            out.append(f'  union {region}["{quoteText(name)}"]{valuePart}')
-        if node.color:
-            styles.append(f'  style {region} fill:{node.color}')
-    if styles:
-        out.append('')
-        out += styles
-    return '\n'.join(out)
+                needX = needY = self.minLineLength
+            self.needs.append((needX, needY))
+
+    def gapX(self, cellA, cellB):
+        return abs(cellA[0] - cellB[0]) * self.colPitch - self.drawnWidth
+
+    def gapY(self, cellA, cellB):
+        return abs(cellA[1] - cellB[1]) * self.rowPitch - self.cellHeight
+
+    def cellsForRadius(self, radius):
+        cells = []
+        for index in range(self.count):
+            theta = math.radians(self.degree + 360 * index / self.count)
+            xValue = radius * math.sin(theta)
+            yValue = -radius * math.cos(theta)
+            cells.append((roundHalfAway(xValue / self.colPitch), roundHalfAway(yValue / self.rowPitch)))
+        return cells
+
+    def isValid(self, cells):
+        center = (0, 0)
+        for index, cell in enumerate(cells):
+            needX, needY = self.needs[index]
+            if not (self.gapX(center, cell) >= needX or self.gapY(center, cell) >= needY):
+                return False
+        for i in range(len(cells)):
+            for j in range(i + 1, len(cells)):
+                if not (self.gapX(cells[i], cells[j]) >= self.minBlockGap
+                        or self.gapY(cells[i], cells[j]) >= self.minBlockGap):
+                    return False
+        return True
+
+    def distortion(self, cells):
+        step = 360 / self.count
+        maxDelta = 0.0
+        distances = []
+        for index, (col, row) in enumerate(cells):
+            xPos = col * self.colPitch
+            yPos = row * self.rowPitch
+            actualAngle = math.degrees(math.atan2(xPos, -yPos)) % 360
+            targetAngle = (self.degree + step * index) % 360
+            diff = abs(actualAngle - targetAngle) % 360
+            maxDelta = max(maxDelta, min(diff, 360 - diff))
+            distances.append(math.hypot(xPos, yPos))
+        meanDistance = sum(distances) / len(distances)
+        return angleWeight * maxDelta / step + (max(distances) - min(distances)) / meanDistance
 
 
-def generateTable(tableRoots, typeId):
-    """table系（8.3）."""
-    suffix = typeId[len('table'):]
-    boldColumn = int(suffix[0]) if suffix[:1].isdigit() else None
-    isCentered = suffix.endswith('c')
-
-    rows = []
-    for root in tableRoots:
-        cells = [root.text] + [child.text for child in root.children]
-        # 8.3.0 空セルの置換
-        cells = [fullWidthSpace if cell.replace(' ', '').replace('\t', '') == '' else cell
-                 for cell in cells]
-        rows.append(cells)
-
-    columnWidths = {}
-    for cells in rows:
-        for columnIndex, cell in enumerate(cells):
-            columnWidths[columnIndex] = max(columnWidths.get(columnIndex, 0), displayWidth(cell))
-
-    out = ['@startsalt', '{#']
-    for rowIndex, cells in enumerate(rows):
-        cellTexts = []
-        for columnIndex, cell in enumerate(cells):
-            cellText = cell
-            # 8.3.1 太字化
-            if boldColumn is not None and (rowIndex == 0 or columnIndex + 1 == boldColumn):
-                cellText = f'<b>{cellText}</b>'
-            # 8.3.2 センタリング
-            if isCentered:
-                padWidth = columnWidths[columnIndex] - displayWidth(cell)
-                spaceCount = padWidth // 2
-                leftCount = spaceCount // 2
-                rightCount = spaceCount - leftCount
-                if columnIndex == len(cells) - 1:
-                    rightCount = 0
-                cellText = fullWidthSpace * leftCount + cellText + fullWidthSpace * rightCount
-            cellTexts.append(cellText)
-        out.append('| ' + ' | '.join(cellTexts))
-    out += ['}', '@endsalt']
-    return '\n'.join(out)
+def searchStarCells(geometry, radiusOption):
+    """半径の探索（10.9.10）。有効な配置のセル座標リストを返す。"""
+    if radiusOption is not None:
+        cells = geometry.cellsForRadius(radiusOption)
+        if not geometry.isValid(cells):
+            raise ConditionError(f'star: --radius {radiusOption:g} では周辺ブロックや線ラベルが重なる')
+        return cells
+    radiusStep = min(geometry.colPitch, geometry.rowPitch) / 8
+    firstRadius = None
+    bestCells = None
+    bestScore = None
+    k = 0
+    while True:
+        radius = geometry.rowPitch + k * radiusStep
+        if radius > geometry.rowPitch * 1000:
+            raise ConditionError('star: 有効な配置が見つからない')
+        cells = geometry.cellsForRadius(radius)
+        if geometry.isValid(cells):
+            if firstRadius is None:
+                firstRadius = radius
+            score = geometry.distortion(cells) + sizePenalty * (radius / firstRadius - 1)
+            if bestCells is None or score < bestScore - 1e-9:
+                bestCells = cells
+                bestScore = score
+        if firstRadius is not None and radius > firstRadius * searchRange:
+            return bestCells
+        k += 1
 
 
-def generateQuadrant(roots):
-    """quadrant（9章）."""
-    firstRoot, secondRoot = roots
-    quadrantOf = {
-        firstRoot.children[0].nodeId: 3,
-        firstRoot.children[1].nodeId: 2,
-        secondRoot.children[0].nodeId: 4,
-        secondRoot.children[1].nodeId: 1,
-    }
-    level2Nodes = firstRoot.children + secondRoot.children
+def generateStar(tree, opts):
+    root = requireSingleRoot(tree, 'star')
+    if not root.children:
+        raise ConditionError('star: レベル2の節が1個以上必要である')
+    if tree.maxLevel() > 2:
+        raise ConditionError('star: レベル3以上の節が存在してはならない')
 
-    fills = {}
-    for node in level2Nodes:
-        if node.color:
-            fills[quadrantOf[node.nodeId]] = node.color
+    geometry = StarGeometry(root, opts)
+    cells = searchStarCells(geometry, opts.radiusValue)
+    span = geometry.span
+    spanSuffix = f':{span}' if span >= 2 else ''
+
+    placed = [(0, 0, root)] + [(col, row, node) for (col, row), node in zip(cells, root.children)]
+    minCol = min(col for col, _, _ in placed)
+    endCol = max(col for col, _, _ in placed) + span
+    width = endCol - minCol
+    minRow = min(row for _, row, _ in placed)
+    maxRow = max(row for _, row, _ in placed)
+
     out = []
-    if fills:
-        out += ['---', 'config:', '  themeVariables:']
-        for quadrantNo in range(1, 5):
-            if quadrantNo in fills:
-                out.append(f'    quadrant{quadrantNo}Fill: "{fills[quadrantNo]}"')
-        out.append('---')
+    if opts.layout == 'spacyPadding':
+        out += blockPaddingFrontmatter
+    out += ['block', f'columns {width}']
+    for row in range(minRow, maxRow + 1):
+        rowBlocks = sorted(((col, node) for col, r, node in placed if r == row), key=lambda item: item[0])
+        parts = []
+        cursor = minCol
+        for col, node in rowBlocks:
+            if col > cursor:
+                parts.append(spaceToken(col - cursor))
+            parts.append(mermaidNodeDef(node) + spanSuffix)
+            cursor = col + span
+        if endCol > cursor:
+            parts.append(spaceToken(endCol - cursor))
+        out.append(' '.join(parts))
 
-    out.append('quadrantChart')
-    out.append(f'  x-axis "{quoteText(firstRoot.text)}" --> "{quoteText(secondRoot.text)}"')
-    out.append(f'  y-axis "{quoteText(firstRoot.children[0].text)}" --> "{quoteText(firstRoot.children[1].text)}"')
+    reverse = opts.arrowDirection == 'reverse'
+    out.append('')
+    for node in root.children:
+        out.append(blockEdge(root.nodeId, node.nodeId, node.lineType or opts.line, node.label, reverse))
 
-    labels = {quadrantOf[n.nodeId]: n.children[0].text for n in level2Nodes}
-    for quadrantNo in range(1, 5):
-        out.append(f'  quadrant-{quadrantNo} "{quoteText(labels[quadrantNo])}"')
-
-    for rootIndex, root in enumerate(roots):
-        xValue = 25 if rootIndex == 0 else 75
-        for childIndex, level2Node in enumerate(root.children):
-            baseY = 40 if childIndex == 0 else 90
-            for pointIndex, pointNode in enumerate(level2Node.children[1:]):
-                yValue = baseY - 5 * pointIndex
-                out.append(f'  "{quoteText(pointNode.text)}": '
-                           f'[{formatCoordinate(xValue)}, {formatCoordinate(yValue)}] radius:0')
-    return '\n'.join(out)
+    styles = mermaidStyleLines([root] + root.children)
+    if styles:
+        out.append('')
+        out += styles
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1024,163 +1215,200 @@ def generateQuadrant(roots):
 def buildArgumentParser():
     parser = argparse.ArgumentParser(
         prog='heading2diagram.py',
-        description='見出し形式Markdownから PlantUML / Mermaid のダイアグラム定義を生成する')
-    parser.add_argument('input', metavar='INPUT.md', help='見出し形式の入力ファイル')
-    parser.add_argument('-o', '--output', metavar='OUTPUT.md', help='出力ファイル（省略時は標準出力）')
-    parser.add_argument('-t', '--type', dest='types', nargs='+', action='extend', choices=typeIdList,
-                        metavar='TYPE', help='生成する図種ID（複数指定可）: ' + ', '.join(typeIdList))
+        description='見出し形式Markdownからダイアグラム定義（PlantUML / Mermaid）を生成する。')
+    parser.add_argument('input', metavar='INPUT.md', help='見出し形式の入力ファイルパス')
+    parser.add_argument('-o', '--output', metavar='OUTPUT.md', help='出力ファイルパス（省略時は標準出力）')
+    parser.add_argument('-t', '--type', dest='types', metavar='TYPE', nargs='+', action='extend',
+                        choices=typeIdList, help='生成する図種ID（複数指定可）: ' + ', '.join(typeIdList))
     parser.add_argument('--direction', choices=directionChoices, default=None)
     parser.add_argument('--layout', choices=layoutChoices, default=None)
     parser.add_argument('--line', choices=lineChoices, default=None)
     parser.add_argument('--arrowDirection', choices=arrowDirectionChoices, default=None)
     parser.add_argument('--curve', choices=curveChoices, default=None)
+    parser.add_argument('--degree', default=None)
+    parser.add_argument('--span', default=None)
+    parser.add_argument('--radius', default=None)
+    parser.add_argument('--blockWidth', default=None)
     return parser
 
 
-def makeHeading(typeId, explicitOptions):
-    optionParts = []
-    for optionName in meaningfulOptions.get(typeId, []):
-        if optionName in explicitOptions:
-            optionParts.append(f'{optionFlags[optionName]} {explicitOptions[optionName]}')
-    heading = f'## {typeId}'
-    if optionParts:
-        heading += ' (' + ' '.join(optionParts) + ')'
-    return heading
+def parseFiniteFloat(text):
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
 
 
-def run(argv=None):
+class Options:
+    """既定値を適用した実効オプションと、明示指定されたオプション文字列。"""
+
+    def __init__(self, args, parser):
+        self.givenOptions = {}
+        for name in ('direction', 'layout', 'line', 'arrowDirection', 'curve',
+                     'degree', 'span', 'radius', 'blockWidth'):
+            value = getattr(args, name)
+            if value is not None:
+                self.givenOptions[name] = value
+        self.direction = args.direction or 'TB'
+        self.layout = args.layout or 'normal'
+        self.line = args.line or 'solid'
+        self.arrowDirection = args.arrowDirection or 'default'
+        self.curve = args.curve or 'default'
+
+        self.degreeValue = 0.0
+        if args.degree is not None:
+            self.degreeValue = parseFiniteFloat(args.degree)
+            if self.degreeValue is None:
+                parser.error(f'argument --degree: 数値でない値である: {args.degree!r}')
+        self.spanValue = 4
+        if args.span is not None:
+            try:
+                self.spanValue = int(args.span)
+            except ValueError:
+                parser.error(f'argument --span: 1以上の整数を指定すること: {args.span!r}')
+            if self.spanValue < 1:
+                parser.error(f'argument --span: 1以上の整数を指定すること: {args.span!r}')
+        self.radiusValue = None
+        if args.radius is not None:
+            self.radiusValue = parseFiniteFloat(args.radius)
+            if self.radiusValue is None or self.radiusValue <= 0:
+                parser.error(f'argument --radius: 正の数を指定すること: {args.radius!r}')
+        self.blockWidthValue = None
+        if args.blockWidth is not None:
+            self.blockWidthValue = parseFiniteFloat(args.blockWidth)
+            if self.blockWidthValue is None or self.blockWidthValue <= 0:
+                parser.error(f'argument --blockWidth: 正の数を指定すること: {args.blockWidth!r}')
+
+    def headingFor(self, typeId):
+        parts = [f'--{name} {self.givenOptions[name]}'
+                 for name in headingOptions.get(typeId, []) if name in self.givenOptions]
+        return f'## {typeId}' + (f' ({" ".join(parts)})' if parts else '')
+
+
+def generateDiagram(typeId, trees, opts):
+    normalTree, tableTree = trees
+    if typeId in tableTypeIds:
+        return generateTable(tableTree(), opts, typeId)
+    tree = normalTree()
+    if typeId == 'hier-mind':
+        return generateMindmap(tree, opts, typeId, withLabel=False)
+    if typeId == 'hier-mindlabel':
+        return generateMindmap(tree, opts, typeId, withLabel=True)
+    generators = {
+        'hier-block': generateHierBlock,
+        'hier-flow': generateHierFlow,
+        'fishBone': generateFishBone,
+        'pie': generatePie,
+        'venn': generateVenn,
+        'struct-flow': generateStructFlow,
+        'quadrant': generateQuadrant,
+        'star': generateStar,
+    }
+    return generators[typeId](tree, opts)
+
+
+def readInputLines(path):
+    try:
+        with open(path, encoding='utf-8-sig', newline=None) as inputFile:
+            return inputFile.read().split('\n')
+    except FileNotFoundError:
+        raise InputError(f'入力ファイルが存在しない: {path}')
+    except UnicodeDecodeError:
+        raise InputError(f'入力ファイルをUTF-8として復号できない: {path}')
+    except OSError as exc:
+        raise InputError(f'入力ファイルを読めない: {path} ({exc.strerror})')
+
+
+def run(argv):
     parser = buildArgumentParser()
     args = parser.parse_args(argv)
-    diag = Diagnostics()
+    opts = Options(args, parser)
 
-    defaultOptions = {'direction': 'TB', 'layout': 'normal', 'line': 'solid',
-                      'arrowDirection': 'default', 'curve': 'default'}
-    explicitOptions = {}
-    options = {}
-    for optionName in optionOrder:
-        value = getattr(args, optionName)
-        if value is not None:
-            explicitOptions[optionName] = value
-            options[optionName] = value
-        else:
-            options[optionName] = defaultOptions[optionName]
+    lines = readInputLines(args.input)
+    records = parseLines(lines)
+    if not any(not record.isEmpty for record in records):
+        raise InputError('有効な見出し行（テキストが空でない見出し行）が1行も無い')
 
-    # 入力の読み込み
-    try:
-        with open(args.input, 'rb') as inputFile:
-            sourceBytes = inputFile.read()
-        sourceText = sourceBytes.decode('utf-8')
-    except FileNotFoundError:
-        diag.error(f'入力ファイルが存在しない: {args.input}')
-        return 1
-    except UnicodeDecodeError:
-        diag.error(f'入力ファイルを UTF-8 として復号できない: {args.input}')
-        return 1
-    except OSError as exc:
-        diag.error(f'入力ファイルを読めない: {args.input} ({exc.strerror})')
-        return 1
-    if sourceText.startswith('\ufeff'):
-        sourceText = sourceText[1:]
-
-    entries = parseInput(sourceText, diag)
-    if not any(not entry.isEmpty for entry in entries):
-        diag.error('有効な見出し行（テキストが空でない見出し行）が1行も無い')
-        return 1
-
-    # 生成対象の決定
-    isExplicit = args.types is not None
-    if isExplicit:
-        targets = []
-        for typeId in args.types:
-            if typeId not in targets:
-                targets.append(typeId)
+    explicit = bool(args.types)
+    if explicit:
+        targetTypes = list(dict.fromkeys(args.types))
     else:
-        targets = None  # 木の構築後に決定
+        targetTypes = list(defaultTypeIds)
 
-    needsMainTree = (not isExplicit) or any(t not in tableTypeIds for t in targets)
-    needsTableTree = (not isExplicit) or any(t in tableTypeIds for t in targets)
+    # 内容が空の見出し行の警告（table系以外の図種が生成対象に含まれる場合のみ）
+    if any(typeId not in tableTypeIds for typeId in targetTypes):
+        for record in records:
+            if record.isEmpty:
+                reporter.warn(f'line {record.lineNo}: 内容（テキスト）が空の見出し行である。'
+                              'table系以外の図種では無視し、table系では空セルとして扱う')
 
-    mainRoots = []
-    tableRoots = []
-    if needsMainTree:
-        for entry in entries:
-            if entry.isEmpty:
-                diag.warn(f'{entry.lineNo}行目: 内容（テキスト）が空の見出し行である。'
-                          'table系以外の図種では無視し、table系では空セルとして扱う')
-        mainRoots = buildTree(entries, False, diag)
-    if needsTableTree:
-        tableRoots = buildTree(entries, True, diag)
+    # 木は必要になった時点で構築する
+    cache = {}
 
-    hasLabel = any(node.label for node in walkDepthFirst(mainRoots))
-    if not isExplicit:
-        targets = ['hier-mindlabel' if hasLabel else 'hier-mind', 'hier-block', 'hier-flow',
-                   'fishBone', 'pie', 'venn', 'table', 'struct-flow', 'quadrant']
+    def normalTree():
+        if 'normal' not in cache:
+            cache['normal'] = buildTree(records, includeEmpty=False)
+        return cache['normal']
 
-    # 入力条件の判定
-    validTargets = []
-    hasError = False
-    for typeId in targets:
-        reason = checkCondition(typeId, mainRoots, tableRoots)
-        if reason is None:
-            validTargets.append(typeId)
-        elif isExplicit:
-            diag.error(f'図種 {typeId} の入力条件を満たさない: {reason}')
-            hasError = True
-        else:
-            diag.warn(f'図種 {typeId} の入力条件を満たさないためスキップする: {reason}')
-    if hasError:
-        return 1
-    if not validTargets:
-        diag.error('生成できた図種が1つも無い')
-        return 1
+    def tableTree():
+        if 'table' not in cache:
+            cache['table'] = buildTree(records, includeEmpty=True)
+        return cache['table']
 
-    # 生成
+    trees = (normalTree, tableTree)
     blocks = []
-    for typeId in validTargets:
-        outputTypeId = typeId
-        if typeId == 'hier-mind' and hasLabel:
-            diag.warn('hier-mind: 入力にラベル（|x|）が含まれるため、hier-mindlabel として生成する')
-            outputTypeId = 'hier-mindlabel'
+    errors = []
+    for typeId in targetTypes:
+        actualType = typeId
+        if typeId == 'hier-mind' and any(node.label for node in normalTree().allNodes()):
+            if explicit:
+                reporter.warn('hier-mind: 入力にラベルが含まれるため hier-mindlabel として生成する')
+            actualType = 'hier-mindlabel'
+        try:
+            body = generateDiagram(actualType, trees, opts)
+        except ConditionError as exc:
+            if explicit:
+                errors.append(f'入力条件違反: {exc}')
+            else:
+                reporter.warn(f'入力条件違反のためスキップする: {exc}')
+            continue
+        fence = 'plantuml' if actualType in plantumlTypeIds else 'mermaid'
+        # 見出しのオプションは指定された図種（hier-mind）の定義で決める
+        heading = opts.headingFor(typeId).replace(f'## {typeId}', f'## {actualType}', 1)
+        blocks.append('\n'.join([heading, '```' + fence] + body + ['```']))
 
-        if outputTypeId in ('hier-mind', 'hier-mindlabel'):
-            body = generateMindmap(mainRoots, options, outputTypeId == 'hier-mindlabel', outputTypeId, diag)
-        elif typeId == 'hier-flow':
-            body = generateFlowchart(mainRoots, options)
-        elif typeId == 'hier-block':
-            body = generateHierBlock(mainRoots, options)
-        elif typeId == 'struct-flow':
-            body = generateStructFlow(mainRoots, options)
-        elif typeId == 'fishBone':
-            body = generateFishBone(mainRoots)
-        elif typeId == 'pie':
-            body = generatePie(mainRoots, diag)
-        elif typeId == 'venn':
-            body = generateVenn(mainRoots)
-        elif typeId in tableTypeIds:
-            body = generateTable(tableRoots, typeId)
-        else:
-            body = generateQuadrant(mainRoots)
-
-        fenceLanguage = 'plantuml' if outputTypeId in plantumlTypeIds else 'mermaid'
-        blocks.append('\n'.join([makeHeading(outputTypeId, explicitOptions),
-                                 f'```{fenceLanguage}', body, '```']))
+    if errors:
+        for message in errors:
+            Reporter.error(message)
+        return 1
+    if not blocks:
+        raise InputError('生成できた図種が1つも無い')
 
     outputText = '\n\n'.join(blocks) + '\n'
-
     if args.output:
         try:
             with open(args.output, 'w', encoding='utf-8', newline='\n') as outputFile:
                 outputFile.write(outputText)
         except OSError as exc:
-            diag.error(f'出力ファイルへ書き込めない: {args.output} ({exc.strerror})')
-            return 1
+            raise InputError(f'出力ファイルへ書き込めない: {args.output} ({exc.strerror})')
     else:
-        writeStream(sys.stdout, outputText)
+        sys.stdout.buffer.write(outputText.encode('utf-8'))
+        sys.stdout.flush()
     return 0
 
 
 def main():
-    sys.exit(run())
+    try:
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
+    try:
+        exitCode = run(sys.argv[1:])
+    except InputError as exc:
+        Reporter.error(str(exc))
+        exitCode = 1
+    sys.exit(exitCode)
 
 
 if __name__ == '__main__':

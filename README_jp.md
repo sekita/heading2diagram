@@ -8,7 +8,7 @@
 
 ## バージョン
 
-`1.0.2`
+`1.1.0`
 
 ## 動作環境
 
@@ -89,12 +89,31 @@ python heading2diagram.py examples/example1.md -t hier-flow
 | 表を生成する | `table`, `tablec`, `table1`, `table1c`, `table2`, `table2c`, `table3`, `table3c` |
 | 手順・流れを表す | `struct-flow` |
 | 2つの観点による4象限を表す | `quadrant` |
+| 中心の要素と周囲の要素を放射状に表す | `star` |
 
 接続線ラベルを含む入力に対して `hier-mind` を指定した場合は、`hier-mindlabel` が自動的に用いられる。
 
+### 放射状の図（`star`）
+
+`star` はバージョン 1.1.0 で追加した図種である。第1階層に中心の要素を1個、第2階層に周囲の要素を記述する。周囲の要素は、中心の真上から始めて、記述順に時計回りで配置される。第3階層以下は記述しない。
+
+```text
+# 円形;会議の準備:#ffd
+## 議題の確定
+## |前回議事録|実線矢印;資料作成
+## |参加者確定|実線矢印;サブ;会場手配:#0FF
+## |会場確定|点線矢印;日程調整
+## 角丸;備品確認
+```
+
+```sh
+python heading2diagram.py examples/example8.md -t star
+python heading2diagram.py examples/example8.md -t star --degree 30 --line dotted
+```
+
 ## 要素ごとの属性指定
 
-`hier-mind`、`hier-flow`、`hier-block`、`struct-flow` では、各要素に属性を付加できる。
+`hier-mind`、`hier-flow`、`hier-block`、`struct-flow`、`star` では、各要素に属性を付加できる。
 
 ```text
 [|ラベル|][線種;][形状;]テキスト[:#色]
@@ -157,16 +176,20 @@ RGBを表す3桁または6桁の16進数として、先頭に `#` を付ける�
 | オプション | 主な適用図種 | 指定値 |
 |---|---|---|
 | `--direction` | `hier-*` | `TB`, `TD`, `BT`, `LR`, `RL` |
-| `--layout` | `hier-*`, `struct-flow` | `tight`, `normal`, `spacyX`, `spacyY`, `spacyXY`, `spacyPadding` |
-| `--line` | `hier-*`, `struct-flow` | `dotted`, `solid`, `thick`, `dottedArrow`, `solidArrow`, `thickArrow` |
-| `--arrowDirection` | `hier-flow`, `hier-block`, `struct-flow` | `default`, `reverse` |
+| `--layout` | `hier-*`, `struct-flow`, `star` | `tight`, `normal`, `spacyX`, `spacyY`, `spacyXY`, `spacyPadding` |
+| `--line` | `hier-*`, `struct-flow`, `star` | `dotted`, `solid`, `thick`, `dottedArrow`, `solidArrow`, `thickArrow` |
+| `--arrowDirection` | `hier-flow`, `hier-block`, `star` | `default`, `reverse` |
 | `--curve` | `hier-flow` | `default`, `linear`, `bumpX`, `bumpY`, `cardinal`, `catmullRom`, `monotoneX`, `monotoneY`, `natural`, `step` |
+| `--degree` | `star` | 周囲の最初の要素を置く角度（度）。既定は `0`（真上）で、時計回りに増える |
+| `--span` | `star` | 各ブロックが占める格子の列数（1以上の整数）。既定は `4` |
+| `--radius` | `star` | 中心からの距離（推定ピクセル）。既定は自動 |
+| `--blockWidth` | `star` | 配置計算に用いるブロック幅（推定ピクセル）。既定は最も幅の広いブロックの推定幅 |
 
 ここで `hier-*` は説明上の総称であり、実際の図種IDではない。詳細は [見出し形式文法](docs/見出し形式文法.md) を参照すること。
 
 ## 使用例
 
-`examples/` には7種類の入力例と14個の参照出力を収録している。
+`examples/` には、日本語の入力例8種類（`example1.md`〜`example8.md`）と、それぞれの参照出力16個（`out1_*.md`〜`out8_*.md`）を収録している。
 
 ```text
 examples/
@@ -176,7 +199,8 @@ examples/
 ├── example4.md  # Venn図
 ├── example5.md  # 表
 ├── example6.md  # 4象限
-└── example7.md  # 円グラフ
+├── example7.md  # 円グラフ
+└── example8.md  # 放射状の図（star）
 ```
 
 各コマンドと対応する出力については [examples/README_jp.md](examples/README_jp.md) を参照すること。
@@ -189,7 +213,7 @@ examples/
 python -m unittest discover -s tests -v
 ```
 
-現バージョンでは、`examples/` の14個の参照出力とプログラム出力が完全一致することを確認している。
+現バージョンでは、`examples/` のすべての参照出力とプログラム出力が完全一致することを確認している。
 
 ## 入力誤りへの対応
 
@@ -217,8 +241,9 @@ heading2diagram/
 ├── examples/
 │   ├── README.md
 │   ├── README_jp.md
-│   ├── example1.md ... example7.md
-│   └── out*.md
+│   ├── example1.md ... example8.md   # 日本語の入力例
+│   ├── example1_en.md ... example8_en.md   # 英語の入力例
+│   └── out*.md   # 参照出力
 └── tests/
     └── test_examples.py
 ```
